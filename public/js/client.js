@@ -57,6 +57,7 @@
       updateHud();
       renderInventory();
       renderCrafting();
+      renderQuestTracker();
       if (!me.alive) showDeath(); else hideDeath();
     });
     socket.on('events', (events) => {
@@ -72,6 +73,15 @@
       if (!res.ok) flashMessage('cannot eat that');
     });
     socket.on('chat', (msg) => addChat(msg));
+    socket.on('npcDialogue', (data) => showNpcDialogue(data));
+    socket.on('questResult', (res) => {
+      if (!res.ok) { flashMessage(res.reason || 'quest action failed'); return; }
+      if (res.action === 'turnIn' && res.reward && res.reward.items) {
+        const parts = Object.entries(res.reward.items).map(([it, amt]) => `+${amt} ${ITEM_INFO[it] ? ITEM_INFO[it].label : it}`);
+        flashMessage(`Quest complete! ${parts.join(', ')}`);
+      }
+      hideNpcDialogue();
+    });
   }
 
   const floatingTexts = [];
@@ -92,6 +102,7 @@
     if (keyMap[e.code]) { keys[keyMap[e.code]] = true; sendInput(); }
     if (e.code === 'KeyE') toggleCrafting();
     if (e.code === 'Space') { e.preventDefault(); eatFirstFood(); }
+    if (e.code === 'Escape' && currentDialogue) hideNpcDialogue();
   });
   window.addEventListener('keyup', (e) => {
     if (keyMap[e.code]) { keys[keyMap[e.code]] = false; sendInput(); }
@@ -125,10 +136,10 @@
     if (!state || !me || !me.alive) return;
     // Find nearest interactable within range of both player and click.
     let best = null, bestScore = Infinity;
-    const consider = (type, id, x, y) => {
+    const consider = (type, id, x, y, range) => {
       const distToClick = Math.hypot(x - mouseWorld.x, y - mouseWorld.y);
       const distToPlayer = Math.hypot(x - myPos.x, y - myPos.y);
-      if (distToPlayer > 2.2) return;
+      if (distToPlayer > (range || 2.2)) return;
       if (distToClick > 1.4) return;
       if (distToClick < bestScore) { bestScore = distToClick; best = { type, id }; }
     };
@@ -138,8 +149,10 @@
       if (p.id === myId || !p.alive) continue;
       consider('player', p.id, p.x, p.y);
     }
+    for (const n of state.npcs || []) consider('npc', n.id, n.x, n.y, 3);
     if (!best) return;
     if (best.type === 'resource') socket.emit('gather', best.id);
+    else if (best.type === 'npc') socket.emit('talkNpc', best.id);
     else socket.emit('attack', { targetType: best.type, targetId: best.id });
   }
 
@@ -184,7 +197,7 @@
       const s = worldToScreen(r.x, r.y);
       ctx.font = `${TILE_PX * 0.8}px sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      const icon = r.type === 'tree' ? '🌲' : r.type === 'rock' ? '🪨' : '🌿';
+      const icon = r.type === 'tree' ? '🌲' : r.type === 'rock' ? '🪨' : r.type === 'iron_vein' ? '⛰️' : '🌿';
       ctx.fillText(icon, s.x, s.y);
       if (r.hp < r.maxHp) drawBar(s.x - 14, s.y - TILE_PX * 0.55, 28, 4, r.hp / r.maxHp, '#8bc34a');
     }
@@ -195,8 +208,20 @@
         const s = worldToScreen(st.x, st.y);
         ctx.font = `${TILE_PX * 0.8}px sans-serif`;
         ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(st.type === 'campfire' ? '🔥' : '🧱', s.x, s.y);
+        const stIcon = st.type === 'campfire' ? '🔥' : st.type === 'furnace' ? '🏭' : '🧱';
+        ctx.fillText(stIcon, s.x, s.y);
       }
+    }
+
+    // npcs
+    for (const n of state.npcs || []) {
+      const s = worldToScreen(n.x, n.y);
+      ctx.font = `${TILE_PX * 0.85}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(n.icon || '🧑', s.x, s.y);
+      ctx.fillStyle = '#f5c542';
+      ctx.font = '12px sans-serif';
+      ctx.fillText(n.name, s.x, s.y - TILE_PX * 0.6);
     }
 
     // mobs
@@ -302,12 +327,15 @@
 
   // ---------- Inventory ----------
   const inventoryList = document.getElementById('inventoryList');
+  const armorSlotsEl = document.getElementById('armorSlots');
+
   function renderInventory() {
     if (!me) return;
     inventoryList.innerHTML = '';
     for (const [item, count] of Object.entries(me.inventory)) {
       if (!count) continue;
       const info = ITEM_INFO[item] || { icon: '❔', label: item };
+      if (info.armorSlot) continue; // shown in the armor slot row instead
       const slot = document.createElement('div');
       slot.className = 'itemSlot' + (me.equipped === item ? ' equipped' : '');
       slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="count">${count}</div>`;
@@ -316,6 +344,39 @@
     }
     if (!inventoryList.children.length) {
       inventoryList.innerHTML = '<div style="font-size:0.75em;color:#789;">Empty — gather wood & stone!</div>';
+    }
+    renderArmorSlots();
+  }
+
+  function renderArmorSlots() {
+    armorSlotsEl.innerHTML = '';
+    for (const slotName of ARMOR_SLOTS) {
+      const equippedItem = me.armor && me.armor[slotName];
+      const div = document.createElement('div');
+      if (equippedItem) {
+        const info = ITEM_INFO[equippedItem];
+        div.className = 'itemSlot armorSlot equipped';
+        div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div>`;
+        div.title = 'Click to unequip';
+        div.addEventListener('click', () => socket.emit('equipArmor', equippedItem));
+      } else {
+        div.className = 'itemSlot armorSlot empty';
+        div.innerHTML = `<div>${ARMOR_SLOT_ICON[slotName]}</div><div class="label">${slotName}</div>`;
+      }
+      armorSlotsEl.appendChild(div);
+    }
+    // owned-but-unequipped armor pieces still need a slot to click on
+    for (const [item, count] of Object.entries(me.inventory)) {
+      if (!count) continue;
+      const info = ITEM_INFO[item];
+      if (!info || !info.armorSlot) continue;
+      if (me.armor[info.armorSlot] === item) continue; // already shown above
+      const div = document.createElement('div');
+      div.className = 'itemSlot armorSlot';
+      div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="count">${count}</div>`;
+      div.title = 'Click to equip';
+      div.addEventListener('click', () => socket.emit('equipArmor', item));
+      armorSlotsEl.appendChild(div);
     }
   }
 
@@ -352,14 +413,99 @@
     for (const recipe of RECIPES) {
       const info = ITEM_INFO[recipe.result];
       const affordable = Object.entries(recipe.cost).every(([it, amt]) => (me.inventory[it] || 0) >= amt);
-      const fireOk = !recipe.requiresFire || me.near_fire !== false;
+      const structureOk = !recipe.requiresStructure || (me.nearStructures || []).includes(recipe.requiresStructure);
+      const questOk = !recipe.requiresQuest || (me.completedQuests || []).includes(recipe.requiresQuest);
       const costStr = Object.entries(recipe.cost).map(([it, amt]) => `${amt} ${ITEM_INFO[it].icon}`).join(' ');
       const slot = document.createElement('div');
-      slot.className = 'itemSlot craftSlot' + (affordable ? '' : ' disabled');
-      slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="cost">${costStr}</div>`;
-      slot.addEventListener('click', () => { if (affordable) socket.emit('craft', recipe.result); });
+      const locked = !questOk;
+      const craftable = affordable && structureOk && questOk;
+      slot.className = 'itemSlot craftSlot' + (locked ? ' locked' : craftable ? '' : ' disabled');
+      let note = '';
+      if (locked) note = '<div class="lockNote">🔒 quest locked</div>';
+      else if (!structureOk) note = `<div class="lockNote">need ${recipe.requiresStructure}</div>`;
+      slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="cost">${costStr}</div>${note}`;
+      slot.title = locked ? 'Complete the related quest to unlock this recipe' : '';
+      slot.addEventListener('click', () => { if (craftable) socket.emit('craft', recipe.result); });
       craftingList.appendChild(slot);
     }
+  }
+
+  // ---------- Quests / NPC dialogue ----------
+  const npcDialogueEl = document.getElementById('npcDialogue');
+  const npcNameEl = document.getElementById('npcName');
+  const npcTextEl = document.getElementById('npcText');
+  const questCardEl = document.getElementById('questCard');
+  const questTitleEl = document.getElementById('questTitle');
+  const questDescEl = document.getElementById('questDesc');
+  const questObjectiveEl = document.getElementById('questObjective');
+  const questRewardEl = document.getElementById('questReward');
+  const questActionBtn = document.getElementById('questActionBtn');
+  const dialogCloseBtn = document.getElementById('dialogCloseBtn');
+  const questTracker = document.getElementById('questTracker');
+
+  let currentDialogue = null;
+
+  function objectiveText(quest) {
+    if (quest.type === 'collect') {
+      return quest.progress.entries.map(e => `${e.have}/${e.need} ${ITEM_INFO[e.item] ? ITEM_INFO[e.item].label : e.item}`).join(', ');
+    }
+    const mobLabel = quest.mobType === 'wolf' ? 'wolves' : quest.mobType;
+    return `${quest.progress.done}/${quest.progress.total} ${mobLabel} slain`;
+  }
+
+  function showNpcDialogue(data) {
+    currentDialogue = data;
+    npcDialogueEl.classList.remove('hidden');
+    npcNameEl.textContent = data.npc ? data.npc.name : 'Villager';
+
+    if (data.state === 'done') {
+      npcTextEl.textContent = data.text;
+      questCardEl.classList.add('hidden');
+      questActionBtn.classList.add('hidden');
+      return;
+    }
+
+    npcTextEl.textContent = data.state === 'offer'
+      ? 'I have a task for you, if you\'re willing.'
+      : data.state === 'ready'
+        ? 'Well done — bring that back to me.'
+        : 'Come back once you\'ve finished the task.';
+
+    const q = data.quest;
+    questCardEl.classList.remove('hidden');
+    questTitleEl.textContent = q.title;
+    questDescEl.textContent = q.desc;
+    questObjectiveEl.textContent = objectiveText(q);
+    questRewardEl.textContent = `Reward: ${q.rewardText}`;
+
+    questActionBtn.classList.remove('hidden');
+    if (data.state === 'offer') {
+      questActionBtn.textContent = 'Accept Quest';
+      questActionBtn.onclick = () => socket.emit('acceptQuest', q.id);
+    } else if (data.state === 'ready') {
+      questActionBtn.textContent = 'Turn In';
+      questActionBtn.onclick = () => socket.emit('turnInQuest', q.id);
+    } else {
+      questActionBtn.classList.add('hidden');
+    }
+  }
+
+  function hideNpcDialogue() {
+    npcDialogueEl.classList.add('hidden');
+    currentDialogue = null;
+  }
+  dialogCloseBtn.addEventListener('click', hideNpcDialogue);
+
+  function renderQuestTracker() {
+    if (!me) return;
+    const active = Object.values(me.activeQuests || {});
+    if (!active.length) { questTracker.classList.add('hidden'); return; }
+    questTracker.classList.remove('hidden');
+    questTracker.innerHTML = active.map(q => `
+      <h4>${q.title}</h4>
+      <p>${q.desc}</p>
+      <p class="qprogress">${objectiveText(q)}</p>
+    `).join('<hr style="border-color:#333;margin:6px 0;">');
   }
 
   // ---------- Chat ----------

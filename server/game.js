@@ -1,5 +1,6 @@
 const { generateWorld, TILE, isWalkable, WORLD_SIZE, makeRng } = require('./world');
 const { ITEMS, RECIPES } = require('./items');
+const { NPCS, QUESTS } = require('./quests');
 
 const TICK_MS = 150;
 const DAY_LENGTH_TICKS = Math.round((6 * 60 * 1000) / TICK_MS); // ~6 min full day/night cycle
@@ -15,6 +16,9 @@ const MAX_MOBS = 24;
 const MOB_AGGRO_RANGE = 6;
 const MOB_ATTACK_RANGE = 1.2;
 const MOB_ATTACK_COOLDOWN_MS = 900;
+const STRUCTURE_RANGE = 3;
+const NPC_INTERACT_RANGE = 3;
+const MAX_ARMOR_REDUCTION = 0.6;
 
 let nextEntityId = 1;
 const genId = () => nextEntityId++;
@@ -26,9 +30,22 @@ class Game {
     this.players = new Map(); // id -> player
     this.resources = new Map(); // id -> resource node
     this.mobs = new Map(); // id -> mob
+    this.structures = new Map(); // id -> placed structure
     this.tick = 0;
     this.spawnResources();
     this.spawnInitialMobs();
+    this.npcs = NPCS.map(n => this.placeNpc(n));
+  }
+
+  placeNpc(def) {
+    const cx = this.world.size / 2, cy = this.world.size / 2;
+    let x = cx, y = cy, tries = 0;
+    while (!isWalkable(this.world, x, y) && tries < 50) {
+      x = cx + (this.rng() - 0.5) * 6;
+      y = cy + (this.rng() - 0.5) * 6;
+      tries++;
+    }
+    return { ...def, x, y };
   }
 
   isNight() {
@@ -47,7 +64,9 @@ class Game {
         const r = this.rng();
         if (t === TILE.FOREST && r < 0.12) {
           this.addResource('tree', x + 0.5, y + 0.5);
-        } else if (t === TILE.STONE && r < 0.16) {
+        } else if (t === TILE.STONE && r < 0.025) {
+          this.addResource('iron_vein', x + 0.5, y + 0.5);
+        } else if (t === TILE.STONE && r < 0.18) {
           this.addResource('rock', x + 0.5, y + 0.5);
         } else if (t === TILE.GRASS && r < 0.03) {
           this.addResource('bush', x + 0.5, y + 0.5);
@@ -58,11 +77,12 @@ class Game {
 
   addResource(type, x, y) {
     const id = 'r' + genId();
-    const hpByType = { tree: 30, rock: 40, bush: 12 };
+    const hpByType = { tree: 30, rock: 40, bush: 12, iron_vein: 50 };
     const yieldByType = {
       tree: { item: 'wood', min: 3, max: 6 },
       rock: { item: 'stone', min: 2, max: 5 },
       bush: { item: 'berry', min: 1, max: 3 },
+      iron_vein: { item: 'iron_ore', min: 1, max: 3 },
     };
     this.resources.set(id, {
       id, type, x, y,
@@ -87,7 +107,7 @@ class Game {
     } while (!isWalkable(this.world, x, y) && tries < 50);
     const id = 'm' + genId();
     this.mobs.set(id, {
-      id, x, y, hp: 30, maxHp: 30, damage: 8,
+      id, type: 'wolf', x, y, hp: 30, maxHp: 30, damage: 8,
       state: 'wander', targetPlayerId: null,
       wanderAngle: this.rng() * Math.PI * 2,
       lastAttack: 0, alive: true,
@@ -111,14 +131,17 @@ class Game {
       hunger: 100, maxHunger: 100,
       inventory: { wood: 0, stone: 0, fiber: 2, berry: 0, meat_raw: 0, meat_cooked: 0 },
       equipped: null,
+      armor: { head: null, chest: null, legs: null },
       alive: true,
       lastAttack: 0,
       lastGather: 0,
       input: { up: false, down: false, left: false, right: false },
-      near_fire: false,
+      nearStructures: [],
       joinedAt: Date.now(),
       kills: 0,
       deaths: 0,
+      completedQuests: new Set(),
+      activeQuests: {}, // questId -> { progress }
     };
     this.players.set(socketId, player);
     return player;
@@ -139,6 +162,23 @@ class Game {
     }
   }
 
+  armorReduction(p) {
+    let total = 0;
+    for (const slot of Object.values(p.armor)) {
+      if (!slot) continue;
+      const def = ITEMS[slot];
+      if (def && def.defense) total += def.defense;
+    }
+    return Math.min(MAX_ARMOR_REDUCTION, total);
+  }
+
+  damagePlayer(p, dmg) {
+    const reduction = this.armorReduction(p);
+    const actual = Math.max(1, Math.round(dmg * (1 - reduction)));
+    p.hp -= actual;
+    return actual;
+  }
+
   gather(socketId, resourceId) {
     const p = this.players.get(socketId);
     const r = this.resources.get(resourceId);
@@ -151,8 +191,8 @@ class Game {
 
     let dmg = 5;
     const tool = p.equipped && ITEMS[p.equipped];
-    if (tool && tool.tool === 'axe' && r.type === 'tree') dmg = 14;
-    if (tool && tool.tool === 'pickaxe' && r.type === 'rock') dmg = 14;
+    if (tool && tool.tool === 'axe' && r.type === 'tree') dmg = 8 + (tool.gatherBonus.wood || 0);
+    if (tool && tool.tool === 'pickaxe' && (r.type === 'rock' || r.type === 'iron_vein')) dmg = 8 + (tool.gatherBonus.stone || 0);
     if (r.type === 'bush') dmg = r.hp; // one-shot harvest
 
     r.hp -= dmg;
@@ -183,8 +223,8 @@ class Game {
     p.lastAttack = now;
 
     const weapon = p.equipped && ITEMS[p.equipped];
-    const dmg = weapon && weapon.damage ? weapon.damage : 4;
-    target.hp -= dmg;
+    const rawDmg = weapon && weapon.damage ? weapon.damage : 4;
+    const dmg = targetType === 'player' ? this.damagePlayer(target, rawDmg) : (target.hp -= rawDmg, rawDmg);
     const events = [{ type: 'attackHit', targetType, targetId, dmg }];
 
     if (target.hp <= 0) {
@@ -193,6 +233,10 @@ class Game {
         p.kills++;
         const meat = 2 + Math.floor(this.rng() * 3);
         p.inventory.meat_raw = (p.inventory.meat_raw || 0) + meat;
+        if (target.type === 'wolf') {
+          p.inventory.wolf_hide = (p.inventory.wolf_hide || 0) + 1;
+        }
+        this.trackKill(p, target.type);
         events.push({ type: 'mobKilled', mobId: targetId, by: socketId });
       } else {
         target.deaths++;
@@ -202,6 +246,15 @@ class Game {
       }
     }
     return events;
+  }
+
+  trackKill(p, mobType) {
+    for (const [qid, progress] of Object.entries(p.activeQuests)) {
+      const q = QUESTS[qid];
+      if (q && q.type === 'kill' && q.mobType === mobType) {
+        progress.progress = Math.min(q.amount, (progress.progress || 0) + 1);
+      }
+    }
   }
 
   respawnPlayer(p) {
@@ -222,21 +275,19 @@ class Game {
     if (!p || !p.alive) return { ok: false, reason: 'dead' };
     const recipe = RECIPES.find(r => r.result === itemId);
     if (!recipe) return { ok: false, reason: 'unknown recipe' };
-    if (recipe.requiresFire && !p.near_fire) return { ok: false, reason: 'need a campfire nearby' };
+    if (recipe.requiresStructure && !p.nearStructures.includes(recipe.requiresStructure)) {
+      return { ok: false, reason: `need a ${recipe.requiresStructure} nearby` };
+    }
+    if (recipe.requiresQuest && !p.completedQuests.has(recipe.requiresQuest)) {
+      return { ok: false, reason: 'recipe not yet learned' };
+    }
     for (const [item, amt] of Object.entries(recipe.cost)) {
       if ((p.inventory[item] || 0) < amt) return { ok: false, reason: `not enough ${item}` };
     }
     for (const [item, amt] of Object.entries(recipe.cost)) {
       p.inventory[item] -= amt;
     }
-    const def = ITEMS[itemId];
-    if (def.placeable) {
-      p.inventory[itemId] = (p.inventory[itemId] || 0) + recipe.count;
-    } else if (def.tool || def.stackable === false) {
-      p.inventory[itemId] = (p.inventory[itemId] || 0) + recipe.count;
-    } else {
-      p.inventory[itemId] = (p.inventory[itemId] || 0) + recipe.count;
-    }
+    p.inventory[itemId] = (p.inventory[itemId] || 0) + recipe.count;
     return { ok: true, item: itemId };
   }
 
@@ -245,9 +296,20 @@ class Game {
     if (!p || !p.alive) return;
     if (itemId === null) { p.equipped = null; return; }
     const def = ITEMS[itemId];
-    if (!def || def.stackable) return;
+    if (!def || def.stackable || def.armorSlot) return;
     if (!(p.inventory[itemId] > 0)) return;
     p.equipped = itemId;
+  }
+
+  equipArmor(socketId, itemId) {
+    const p = this.players.get(socketId);
+    if (!p || !p.alive) return;
+    if (itemId === null) return;
+    const def = ITEMS[itemId];
+    if (!def || !def.armorSlot) return;
+    if (!(p.inventory[itemId] > 0)) return;
+    const slot = def.armorSlot;
+    p.armor[slot] = p.armor[slot] === itemId ? null : itemId;
   }
 
   eat(socketId, itemId) {
@@ -273,9 +335,107 @@ class Game {
     p.inventory[itemId]--;
     const id = 'p' + genId();
     const structure = { id, type: itemId, x, y, hp: 40, maxHp: 40, alive: true, ownerId: socketId };
-    if (!this.structures) this.structures = new Map();
     this.structures.set(id, structure);
     return { ok: true, structure };
+  }
+
+  // ---------- Quests / NPCs ----------
+
+  nearbyNpc(p, npcId) {
+    const npc = this.npcs.find(n => n.id === npcId);
+    if (!npc) return null;
+    const dist = Math.hypot(p.x - npc.x, p.y - npc.y);
+    if (dist > NPC_INTERACT_RANGE) return null;
+    return npc;
+  }
+
+  talkToNpc(socketId, npcId) {
+    const p = this.players.get(socketId);
+    if (!p || !p.alive) return { ok: false, reason: 'dead' };
+    const npc = this.nearbyNpc(p, npcId);
+    if (!npc) return { ok: false, reason: 'too far away' };
+
+    // Find the first quest in this NPC's chain not yet completed.
+    let quest = null;
+    for (const qid of npc.questChain) {
+      if (!p.completedQuests.has(qid)) { quest = QUESTS[qid]; break; }
+    }
+
+    if (!quest) {
+      return { ok: true, npc: { id: npc.id, name: npc.name }, state: 'done', text: `${npc.name} has no more tasks for you. Thank you for protecting Wildholm!` };
+    }
+
+    if (p.activeQuests[quest.id]) {
+      const progress = this.questProgressFor(p, quest);
+      const complete = progress.done >= progress.total;
+      return {
+        ok: true, npc: { id: npc.id, name: npc.name }, state: complete ? 'ready' : 'in_progress',
+        quest: this.describeQuest(quest, progress),
+      };
+    }
+
+    return {
+      ok: true, npc: { id: npc.id, name: npc.name }, state: 'offer',
+      quest: this.describeQuest(quest, this.questProgressFor(p, quest)),
+    };
+  }
+
+  questProgressFor(p, quest) {
+    if (quest.type === 'collect') {
+      const entries = Object.entries(quest.cost).map(([item, amt]) => ({
+        item, need: amt, have: Math.min(amt, p.inventory[item] || 0),
+      }));
+      const done = entries.every(e => e.have >= e.need) ? 1 : 0;
+      return { entries, done, total: 1 };
+    }
+    const active = p.activeQuests[quest.id];
+    const done = active ? (active.progress || 0) : 0;
+    return { done, total: quest.amount };
+  }
+
+  describeQuest(quest, progress) {
+    return {
+      id: quest.id, title: quest.title, desc: quest.desc, type: quest.type,
+      cost: quest.cost, mobType: quest.mobType, amount: quest.amount,
+      rewardText: quest.rewardText, progress,
+    };
+  }
+
+  acceptQuest(socketId, questId) {
+    const p = this.players.get(socketId);
+    const quest = QUESTS[questId];
+    if (!p || !p.alive || !quest) return { ok: false };
+    if (p.completedQuests.has(questId) || p.activeQuests[questId]) return { ok: false };
+    const npc = this.nearbyNpc(p, quest.npc);
+    if (!npc) return { ok: false, reason: 'too far away' };
+    p.activeQuests[questId] = { progress: 0 };
+    return { ok: true, questId };
+  }
+
+  turnInQuest(socketId, questId) {
+    const p = this.players.get(socketId);
+    const quest = QUESTS[questId];
+    if (!p || !p.alive || !quest) return { ok: false };
+    if (!p.activeQuests[questId]) return { ok: false, reason: 'quest not active' };
+    const npc = this.nearbyNpc(p, quest.npc);
+    if (!npc) return { ok: false, reason: 'too far away' };
+
+    const progress = this.questProgressFor(p, quest);
+    if (progress.done < progress.total) return { ok: false, reason: 'objective not complete' };
+
+    if (quest.type === 'collect') {
+      for (const [item, amt] of Object.entries(quest.cost)) {
+        p.inventory[item] -= amt;
+      }
+    }
+    delete p.activeQuests[questId];
+    p.completedQuests.add(questId);
+    if (quest.reward && quest.reward.items) {
+      for (const [item, amt] of Object.entries(quest.reward.items)) {
+        p.inventory[item] = (p.inventory[item] || 0) + amt;
+      }
+    }
+    return { ok: true, questId, reward: quest.reward };
   }
 
   update(dtMs) {
@@ -300,15 +460,13 @@ class Game {
         p.dir = { x: mx, y: my };
       }
 
-      p.near_fire = false;
-      if (this.structures) {
-        for (const s of this.structures.values()) {
-          if (s.type === 'campfire' && s.alive && Math.hypot(s.x - p.x, s.y - p.y) < 3) {
-            p.near_fire = true;
-            break;
-          }
+      const near = [];
+      for (const s of this.structures.values()) {
+        if (s.alive && Math.hypot(s.x - p.x, s.y - p.y) < STRUCTURE_RANGE && !near.includes(s.type)) {
+          near.push(s.type);
         }
       }
+      p.nearStructures = near;
     }
 
     if (this.tick % HUNGER_TICK_INTERVAL === 0) {
@@ -320,7 +478,6 @@ class Game {
           if (p.hp <= 0) {
             p.alive = false;
             p.deaths++;
-            this.respawnTimer = this.respawnTimer || new Map();
           }
         }
       }
@@ -330,7 +487,6 @@ class Game {
       for (const p of this.players.values()) {
         if (!p.alive) continue;
         if (p.hunger > 50 && p.hp < p.maxHp) p.hp = Math.min(p.maxHp, p.hp + 2);
-        if (!p.alive && p.hp <= 0) this.respawnPlayer(p);
       }
     }
 
@@ -383,7 +539,7 @@ class Game {
           const now = Date.now();
           if (now - m.lastAttack > MOB_ATTACK_COOLDOWN_MS) {
             m.lastAttack = now;
-            nearest.hp -= m.damage;
+            this.damagePlayer(nearest, m.damage);
             if (nearest.hp <= 0) {
               nearest.alive = false;
               nearest.deaths++;
@@ -420,26 +576,35 @@ class Game {
       players: Array.from(this.players.values()).map(p => ({
         id: p.id, name: p.name, x: p.x, y: p.y, dir: p.dir,
         hp: p.hp, maxHp: p.maxHp, hunger: p.hunger, maxHunger: p.maxHunger,
-        equipped: p.equipped, alive: p.alive, kills: p.kills, deaths: p.deaths,
+        equipped: p.equipped, armor: p.armor, alive: p.alive, kills: p.kills, deaths: p.deaths,
       })),
       mobs: Array.from(this.mobs.values()).filter(m => m.alive).map(m => ({
-        id: m.id, x: m.x, y: m.y, hp: m.hp, maxHp: m.maxHp, state: m.state,
+        id: m.id, type: m.type, x: m.x, y: m.y, hp: m.hp, maxHp: m.maxHp, state: m.state,
       })),
       resources: Array.from(this.resources.values()).filter(r => r.alive).map(r => ({
         id: r.id, type: r.type, x: r.x, y: r.y, hp: r.hp, maxHp: r.maxHp,
       })),
-      structures: this.structures ? Array.from(this.structures.values()).filter(s => s.alive).map(s => ({
+      structures: Array.from(this.structures.values()).filter(s => s.alive).map(s => ({
         id: s.id, type: s.type, x: s.x, y: s.y, hp: s.hp, maxHp: s.maxHp,
-      })) : [],
+      })),
+      npcs: this.npcs.map(n => ({ id: n.id, name: n.name, icon: n.icon, x: n.x, y: n.y })),
     };
   }
 
   playerState(socketId) {
     const p = this.players.get(socketId);
     if (!p) return null;
+    const activeQuests = {};
+    for (const [qid, state] of Object.entries(p.activeQuests)) {
+      const quest = QUESTS[qid];
+      activeQuests[qid] = this.describeQuest(quest, this.questProgressFor(p, quest));
+    }
     return {
-      inventory: p.inventory, equipped: p.equipped, hp: p.hp, maxHp: p.maxHp,
-      hunger: p.hunger, maxHunger: p.maxHunger, alive: p.alive, near_fire: p.near_fire,
+      inventory: p.inventory, equipped: p.equipped, armor: p.armor,
+      hp: p.hp, maxHp: p.maxHp, hunger: p.hunger, maxHunger: p.maxHunger, alive: p.alive,
+      nearStructures: p.nearStructures,
+      completedQuests: Array.from(p.completedQuests),
+      activeQuests,
     };
   }
 }

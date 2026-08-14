@@ -42,12 +42,32 @@
 
   <div id="inventoryPanel" class="panel">
     <h3>Inventory</h3>
+    <div id="armorSlots" class="itemGrid armorSlots"></div>
     <div id="inventoryList" class="itemGrid"></div>
   </div>
 
   <div id="craftingPanel" class="panel hidden">
     <h3>Crafting <span class="closeHint">(E to close)</span></h3>
     <div id="craftingList" class="itemGrid"></div>
+  </div>
+
+  <div id="questTracker" class="panel hidden"></div>
+
+  <div id="npcDialogue" class="overlay hidden">
+    <div class="loginBox dialogBox">
+      <div id="npcName" class="npcName"></div>
+      <div id="npcText"></div>
+      <div id="questCard" class="hidden">
+        <h4 id="questTitle"></h4>
+        <p id="questDesc"></p>
+        <div id="questObjective"></div>
+        <p class="rewardText" id="questReward"></p>
+      </div>
+      <div class="dialogButtons">
+        <button id="questActionBtn" class="hidden"></button>
+        <button id="dialogCloseBtn">Close</button>
+      </div>
+    </div>
   </div>
 
   <div id="chatBox">

@@ -35,21 +35,37 @@ function generateWorld(seed = 1337) {
     return sum / count;
   }
 
+  // Averaging over a 5x5 window collapses raw noise tightly around 0.5,
+  // which starves the high/low tails (stone, water) of any tiles. Stretch
+  // the blurred field back out to the full [0,1] range before thresholding
+  // so every biome actually gets a fair share of the map.
+  const blurred = new Float32Array(WORLD_SIZE * WORLD_SIZE);
+  let min = Infinity, max = -Infinity;
+  for (let y = 0; y < WORLD_SIZE; y++) {
+    for (let x = 0; x < WORLD_SIZE; x++) {
+      const v = blurredAt(x, y);
+      blurred[y * WORLD_SIZE + x] = v;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+  }
+  const range = Math.max(1e-6, max - min);
+
   for (let y = 0; y < WORLD_SIZE; y++) {
     for (let x = 0; x < WORLD_SIZE; x++) {
       const idx = y * WORLD_SIZE + x;
       const distFromEdge = Math.min(x, y, WORLD_SIZE - 1 - x, WORLD_SIZE - 1 - y);
-      const n = blurredAt(x, y);
+      const n = (blurred[idx] - min) / range;
       let tile;
       if (distFromEdge < 2) {
         tile = TILE.WATER;
-      } else if (n < 0.32) {
+      } else if (n < 0.18) {
         tile = TILE.WATER;
-      } else if (n < 0.38) {
+      } else if (n < 0.26) {
         tile = TILE.SAND;
-      } else if (n < 0.62) {
+      } else if (n < 0.58) {
         tile = TILE.GRASS;
-      } else if (n < 0.8) {
+      } else if (n < 0.82) {
         tile = TILE.FOREST;
       } else {
         tile = TILE.STONE;

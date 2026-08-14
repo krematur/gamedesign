@@ -60,6 +60,29 @@ io.on('connection', (socket) => {
     game.equip(socket.id, itemId);
   });
 
+  socket.on('equipArmor', (itemId) => {
+    if (!joined) return;
+    game.equipArmor(socket.id, itemId);
+  });
+
+  socket.on('talkNpc', (npcId) => {
+    if (!joined) return;
+    const result = game.talkToNpc(socket.id, npcId);
+    socket.emit('npcDialogue', result);
+  });
+
+  socket.on('acceptQuest', (questId) => {
+    if (!joined) return;
+    const result = game.acceptQuest(socket.id, questId);
+    socket.emit('questResult', { action: 'accept', ...result });
+  });
+
+  socket.on('turnInQuest', (questId) => {
+    if (!joined) return;
+    const result = game.turnInQuest(socket.id, questId);
+    socket.emit('questResult', { action: 'turnIn', ...result });
+  });
+
   socket.on('eat', (itemId) => {
     if (!joined) return;
     const result = game.eat(socket.id, itemId);
