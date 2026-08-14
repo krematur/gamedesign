@@ -77,21 +77,26 @@
     socket.on('questResult', (res) => {
       if (!res.ok) { flashMessage(res.reason || 'quest action failed'); return; }
       if (res.action === 'turnIn' && res.reward && res.reward.items) {
-        const parts = Object.entries(res.reward.items).map(([it, amt]) => `+${amt} ${ITEM_INFO[it] ? ITEM_INFO[it].label : it}`);
+        const parts = Object.entries(res.reward.items).map(([it, amt]) => `+${amt} ${getItemInfo(it).label}`);
         flashMessage(`Quest complete! ${parts.join(', ')}`);
       }
       hideNpcDialogue();
     });
   }
 
+  const RESOURCE_ICONS = { tree: '🌲', rock: '🪨', iron_vein: '⛰️', bush: '🌿', shrub: '🌾', fishing_spot: '🐟' };
+
   const floatingTexts = [];
   function handleEvent(e) {
     if (e.type === 'gathered') {
-      floatingTexts.push({ text: `+${e.amount} ${ITEM_INFO[e.item] ? ITEM_INFO[e.item].label : e.item}`, x: e.x, y: e.y, life: 1.2 });
+      const info = getItemInfo(e.item);
+      floatingTexts.push({ text: `+${e.amount} ${info.label}`, x: e.x, y: e.y, life: 1.2, color: QUALITY_COLOR[info.quality] });
     } else if (e.type === 'attackHit') {
       // handled visually via hp bars already
     } else if (e.type === 'mobKilled') {
       floatingTexts.push({ text: 'Kill!', x: null, y: null, life: 1 });
+    } else if (e.type === 'gatherFail') {
+      flashMessage(e.reason || 'cannot gather that');
     }
   }
 
@@ -197,7 +202,7 @@
       const s = worldToScreen(r.x, r.y);
       ctx.font = `${TILE_PX * 0.8}px sans-serif`;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      const icon = r.type === 'tree' ? '🌲' : r.type === 'rock' ? '🪨' : r.type === 'iron_vein' ? '⛰️' : '🌿';
+      const icon = RESOURCE_ICONS[r.type] || '🌿';
       ctx.fillText(icon, s.x, s.y);
       if (r.hp < r.maxHp) drawBar(s.x - 14, s.y - TILE_PX * 0.55, 28, 4, r.hp / r.maxHp, '#8bc34a');
     }
@@ -269,10 +274,12 @@
       if (f.life <= 0) { floatingTexts.splice(i, 1); continue; }
       if (f.x !== null) {
         const s = worldToScreen(f.x, f.y - (1.2 - f.life));
-        ctx.fillStyle = 'rgba(255,255,150,' + Math.min(1, f.life) + ')';
+        ctx.fillStyle = f.color || 'rgba(255,255,150,' + Math.min(1, f.life) + ')';
+        ctx.globalAlpha = Math.min(1, f.life);
         ctx.font = 'bold 14px sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText(f.text, s.x, s.y);
+        ctx.globalAlpha = 1;
       }
     }
 
@@ -334,7 +341,7 @@
     inventoryList.innerHTML = '';
     for (const [item, count] of Object.entries(me.inventory)) {
       if (!count) continue;
-      const info = ITEM_INFO[item] || { icon: '❔', label: item };
+      const info = getItemInfo(item);
       if (info.armorSlot) continue; // shown in the armor slot row instead
       const slot = document.createElement('div');
       slot.className = 'itemSlot' + (me.equipped === item ? ' equipped' : '');
@@ -354,7 +361,7 @@
       const equippedItem = me.armor && me.armor[slotName];
       const div = document.createElement('div');
       if (equippedItem) {
-        const info = ITEM_INFO[equippedItem];
+        const info = getItemInfo(equippedItem);
         div.className = 'itemSlot armorSlot equipped';
         div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div>`;
         div.title = 'Click to unequip';
@@ -368,7 +375,7 @@
     // owned-but-unequipped armor pieces still need a slot to click on
     for (const [item, count] of Object.entries(me.inventory)) {
       if (!count) continue;
-      const info = ITEM_INFO[item];
+      const info = getItemInfo(item);
       if (!info || !info.armorSlot) continue;
       if (me.armor[info.armorSlot] === item) continue; // already shown above
       const div = document.createElement('div');
@@ -394,7 +401,11 @@
 
   function eatFirstFood() {
     if (!me) return;
-    const foodOrder = ['meat_cooked', 'meat_raw', 'berry'];
+    // best food first: fine > normal > crude for each food type, best food type first
+    const foodOrder = [
+      'cooked_fish_fine', 'meat_cooked_fine', 'cooked_fish', 'meat_cooked', 'cooked_fish_crude', 'meat_cooked_crude',
+      'raw_fish_fine', 'raw_fish', 'raw_fish_crude', 'meat_raw', 'berry',
+    ];
     for (const f of foodOrder) {
       if (me.inventory[f] > 0) { socket.emit('eat', f); return; }
     }
@@ -411,23 +422,51 @@
     if (craftingPanel.classList.contains('hidden') || !me) return;
     craftingList.innerHTML = '';
     for (const recipe of RECIPES) {
-      const info = ITEM_INFO[recipe.result];
-      const affordable = Object.entries(recipe.cost).every(([it, amt]) => (me.inventory[it] || 0) >= amt);
+      const info = getItemInfo(recipe.result);
       const structureOk = !recipe.requiresStructure || (me.nearStructures || []).includes(recipe.requiresStructure);
       const questOk = !recipe.requiresQuest || (me.completedQuests || []).includes(recipe.requiresQuest);
-      const costStr = Object.entries(recipe.cost).map(([it, amt]) => `${amt} ${ITEM_INFO[it].icon}`).join(' ');
-      const slot = document.createElement('div');
       const locked = !questOk;
-      const craftable = affordable && structureOk && questOk;
-      slot.className = 'itemSlot craftSlot' + (locked ? ' locked' : craftable ? '' : ' disabled');
+
+      const slot = document.createElement('div');
+      slot.className = 'itemSlot craftSlot' + (locked ? ' locked' : '');
+
+      const qualities = recipe.qualityCraftable ? QUALITY_TIERS : ['normal'];
+      const affordableAny = qualities.some(q => canAffordRecipe(recipe, q));
+      if (!locked && structureOk && !affordableAny) slot.classList.add('disabled');
+
       let note = '';
       if (locked) note = '<div class="lockNote">🔒 quest locked</div>';
       else if (!structureOk) note = `<div class="lockNote">need ${recipe.requiresStructure}</div>`;
-      slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="cost">${costStr}</div>${note}`;
+
+      const baseCostStr = Object.entries(recipe.cost).map(([it, amt]) => `${amt} ${getItemInfo(it).icon}`).join(' ');
+      slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="cost">${baseCostStr}</div>${note}`;
       slot.title = locked ? 'Complete the related quest to unlock this recipe' : '';
-      slot.addEventListener('click', () => { if (craftable) socket.emit('craft', recipe.result); });
+
+      if (!locked && structureOk && recipe.qualityCraftable) {
+        const qRow = document.createElement('div');
+        qRow.className = 'qualityRow';
+        for (const q of QUALITY_TIERS) {
+          const btn = document.createElement('button');
+          btn.className = 'qualityBtn';
+          btn.style.color = QUALITY_COLOR[q];
+          btn.textContent = q === 'normal' ? 'Normal' : QUALITY_PREFIX[q].trim();
+          const ok = canAffordRecipe(recipe, q);
+          btn.disabled = !ok;
+          btn.title = ok ? `Craft ${QUALITY_PREFIX[q]}${info.label.replace(/^(Crude |Fine )/, '')}` : 'Not enough materials at this quality';
+          btn.addEventListener('click', (ev) => { ev.stopPropagation(); if (ok) socket.emit('craft', recipe.result, q); });
+          qRow.appendChild(btn);
+        }
+        slot.appendChild(qRow);
+      } else if (!locked && structureOk) {
+        slot.addEventListener('click', () => { if (canAffordRecipe(recipe, 'normal')) socket.emit('craft', recipe.result); });
+      }
       craftingList.appendChild(slot);
     }
+  }
+
+  function canAffordRecipe(recipe, quality) {
+    const cost = recipeCostForQuality(recipe, quality);
+    return Object.entries(cost).every(([it, amt]) => (me.inventory[it] || 0) >= amt);
   }
 
   // ---------- Quests / NPC dialogue ----------
@@ -447,7 +486,7 @@
 
   function objectiveText(quest) {
     if (quest.type === 'collect') {
-      return quest.progress.entries.map(e => `${e.have}/${e.need} ${ITEM_INFO[e.item] ? ITEM_INFO[e.item].label : e.item}`).join(', ');
+      return quest.progress.entries.map(e => `${e.have}/${e.need} ${getItemInfo(e.item).label}`).join(', ');
     }
     const mobLabel = quest.mobType === 'wolf' ? 'wolves' : quest.mobType;
     return `${quest.progress.done}/${quest.progress.total} ${mobLabel} slain`;

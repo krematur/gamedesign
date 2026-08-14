@@ -2,7 +2,7 @@
 // offer a linear quest chain — one quest unlocks the next once turned in.
 
 const NPCS = [
-  { id: 'elder_rowan', name: 'Elder Rowan', icon: '🧙', questChain: ['first_steps', 'hunter', 'blacksmithing', 'protector'] },
+  { id: 'elder_rowan', name: 'Elder Rowan', icon: '🧙', questChain: ['first_steps', 'hunter', 'angler', 'blacksmithing', 'protector'] },
 ];
 
 const QUESTS = {
@@ -26,6 +26,16 @@ const QUESTS = {
     amount: 3,
     reward: { items: { wolf_hide: 2 }, unlocks: ['hunter'] },
     rewardText: '2 wolf hides, unlocks leather armor recipes',
+  },
+  angler: {
+    id: 'angler',
+    npc: 'elder_rowan',
+    title: 'A Fisherman’s Trade',
+    desc: 'The village could use a steady catch. Bring me 5 fish from the shore.',
+    type: 'collect',
+    cost: { raw_fish: 5 },
+    reward: { items: { fiber: 4, wood: 6 } },
+    rewardText: '4 fiber, 6 wood',
   },
   blacksmithing: {
     id: 'blacksmithing',

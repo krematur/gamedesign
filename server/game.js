@@ -1,6 +1,7 @@
 const { generateWorld, TILE, isWalkable, WORLD_SIZE, makeRng } = require('./world');
 const { ITEMS, RECIPES } = require('./items');
 const { NPCS, QUESTS } = require('./quests');
+const { QUALITY_TIERS, qualifiedId, rollGatherQuality } = require('./quality');
 
 const TICK_MS = 150;
 const DAY_LENGTH_TICKS = Math.round((6 * 60 * 1000) / TICK_MS); // ~6 min full day/night cycle
@@ -57,6 +58,11 @@ class Game {
     return (this.tick % DAY_LENGTH_TICKS) / DAY_LENGTH_TICKS;
   }
 
+  hasWalkableNeighbor(x, y) {
+    return isWalkable(this.world, x - 1, y) || isWalkable(this.world, x + 1, y) ||
+      isWalkable(this.world, x, y - 1) || isWalkable(this.world, x, y + 1);
+  }
+
   spawnResources() {
     for (let y = 0; y < this.world.size; y++) {
       for (let x = 0; x < this.world.size; x++) {
@@ -70,6 +76,10 @@ class Game {
           this.addResource('rock', x + 0.5, y + 0.5);
         } else if (t === TILE.GRASS && r < 0.03) {
           this.addResource('bush', x + 0.5, y + 0.5);
+        } else if (t === TILE.GRASS && r < 0.055) {
+          this.addResource('shrub', x + 0.5, y + 0.5);
+        } else if (t === TILE.WATER && this.hasWalkableNeighbor(x, y) && r < 0.22) {
+          this.addResource('fishing_spot', x + 0.5, y + 0.5);
         }
       }
     }
@@ -77,12 +87,14 @@ class Game {
 
   addResource(type, x, y) {
     const id = 'r' + genId();
-    const hpByType = { tree: 30, rock: 40, bush: 12, iron_vein: 50 };
+    const hpByType = { tree: 30, rock: 40, bush: 12, iron_vein: 50, shrub: 10, fishing_spot: 15 };
     const yieldByType = {
       tree: { item: 'wood', min: 3, max: 6 },
       rock: { item: 'stone', min: 2, max: 5 },
       bush: { item: 'berry', min: 1, max: 3 },
       iron_vein: { item: 'iron_ore', min: 1, max: 3 },
+      shrub: { item: 'fiber', min: 1, max: 3 },
+      fishing_spot: { item: 'raw_fish', min: 1, max: 2 },
     };
     this.resources.set(id, {
       id, type, x, y,
@@ -183,6 +195,12 @@ class Game {
     const p = this.players.get(socketId);
     const r = this.resources.get(resourceId);
     if (!p || !p.alive || !r || !r.alive) return null;
+
+    const tool = p.equipped && ITEMS[p.equipped];
+    if (r.type === 'fishing_spot' && (!tool || tool.tool !== 'fishing_rod')) {
+      return [{ type: 'gatherFail', reason: 'need a fishing rod', resourceId }];
+    }
+
     const now = Date.now();
     if (now - p.lastGather < GATHER_COOLDOWN_MS) return null;
     const dist = Math.hypot(p.x - r.x, p.y - r.y);
@@ -190,10 +208,16 @@ class Game {
     p.lastGather = now;
 
     let dmg = 5;
-    const tool = p.equipped && ITEMS[p.equipped];
-    if (tool && tool.tool === 'axe' && r.type === 'tree') dmg = 8 + (tool.gatherBonus.wood || 0);
-    if (tool && tool.tool === 'pickaxe' && (r.type === 'rock' || r.type === 'iron_vein')) dmg = 8 + (tool.gatherBonus.stone || 0);
-    if (r.type === 'bush') dmg = r.hp; // one-shot harvest
+    let toolMatch = 'none';
+    if (r.type === 'tree') {
+      if (tool && tool.tool === 'axe') { dmg = 8 + (tool.gatherBonus.wood || 0); toolMatch = tool.tier === 2 ? 'iron' : 'basic'; }
+    } else if (r.type === 'rock' || r.type === 'iron_vein') {
+      if (tool && tool.tool === 'pickaxe') { dmg = 8 + (tool.gatherBonus.stone || 0); toolMatch = tool.tier === 2 ? 'iron' : 'basic'; }
+    } else if (r.type === 'bush' || r.type === 'shrub') {
+      dmg = r.hp; toolMatch = 'basic'; // one-shot harvest
+    } else if (r.type === 'fishing_spot') {
+      dmg = 10; toolMatch = 'basic';
+    }
 
     r.hp -= dmg;
     const events = [{ type: 'gatherHit', resourceId, x: r.x, y: r.y }];
@@ -201,8 +225,12 @@ class Game {
       r.alive = false;
       r.respawnAt = this.tick + RESOURCE_RESPAWN_TICKS;
       const amount = r.yield.min + Math.floor(this.rng() * (r.yield.max - r.yield.min + 1));
-      p.inventory[r.yield.item] = (p.inventory[r.yield.item] || 0) + amount;
-      events.push({ type: 'gathered', item: r.yield.item, amount, resourceId });
+      const baseItem = r.yield.item;
+      const tierable = ITEMS[baseItem] && ITEMS[baseItem].tierable;
+      const quality = tierable ? rollGatherQuality(this.rng, toolMatch) : 'normal';
+      const finalId = tierable ? qualifiedId(baseItem, quality) : baseItem;
+      p.inventory[finalId] = (p.inventory[finalId] || 0) + amount;
+      events.push({ type: 'gathered', item: finalId, amount, resourceId, quality });
     }
     return events;
   }
@@ -270,7 +298,7 @@ class Game {
     p.x = x; p.y = y;
   }
 
-  craft(socketId, itemId) {
+  craft(socketId, itemId, quality) {
     const p = this.players.get(socketId);
     if (!p || !p.alive) return { ok: false, reason: 'dead' };
     const recipe = RECIPES.find(r => r.result === itemId);
@@ -281,14 +309,28 @@ class Game {
     if (recipe.requiresQuest && !p.completedQuests.has(recipe.requiresQuest)) {
       return { ok: false, reason: 'recipe not yet learned' };
     }
-    for (const [item, amt] of Object.entries(recipe.cost)) {
-      if ((p.inventory[item] || 0) < amt) return { ok: false, reason: `not enough ${item}` };
+
+    // Quality only applies to results marked tierable; everything else
+    // (structures, armor, cloth gear, fishing rod) always crafts "normal".
+    const resultTierable = ITEMS[itemId] && ITEMS[itemId].tierable;
+    const effectiveQuality = resultTierable && QUALITY_TIERS.includes(quality) ? quality : 'normal';
+
+    const resolvedCost = {};
+    for (const [material, amt] of Object.entries(recipe.cost)) {
+      const materialTierable = ITEMS[material] && ITEMS[material].tierable;
+      const costId = materialTierable && effectiveQuality !== 'normal' ? qualifiedId(material, effectiveQuality) : material;
+      resolvedCost[costId] = (resolvedCost[costId] || 0) + amt;
     }
-    for (const [item, amt] of Object.entries(recipe.cost)) {
-      p.inventory[item] -= amt;
+    for (const [id, amt] of Object.entries(resolvedCost)) {
+      if ((p.inventory[id] || 0) < amt) return { ok: false, reason: `not enough ${id.replace(/_/g, ' ')}` };
     }
-    p.inventory[itemId] = (p.inventory[itemId] || 0) + recipe.count;
-    return { ok: true, item: itemId };
+    for (const [id, amt] of Object.entries(resolvedCost)) {
+      p.inventory[id] -= amt;
+    }
+
+    const outputId = resultTierable ? qualifiedId(itemId, effectiveQuality) : itemId;
+    p.inventory[outputId] = (p.inventory[outputId] || 0) + recipe.count;
+    return { ok: true, item: outputId, quality: effectiveQuality };
   }
 
   equip(socketId, itemId) {
@@ -380,10 +422,35 @@ class Game {
     };
   }
 
+  // Quality-agnostic inventory helpers: quests care about "10 wood", not
+  // which quality tier it came in, so these sum across all tiers of a
+  // tierable base item (crafting, by contrast, cares about exact quality
+  // and uses the inventory map directly).
+  inventoryQuantity(p, baseItem) {
+    if (!(ITEMS[baseItem] && ITEMS[baseItem].tierable)) return p.inventory[baseItem] || 0;
+    return QUALITY_TIERS.reduce((sum, q) => sum + (p.inventory[qualifiedId(baseItem, q)] || 0), 0);
+  }
+
+  consumeInventory(p, baseItem, amount) {
+    if (!(ITEMS[baseItem] && ITEMS[baseItem].tierable)) {
+      p.inventory[baseItem] = (p.inventory[baseItem] || 0) - amount;
+      return;
+    }
+    let remaining = amount;
+    for (const q of QUALITY_TIERS) { // spend crude first, save the good stuff
+      const id = qualifiedId(baseItem, q);
+      const have = p.inventory[id] || 0;
+      const take = Math.min(have, remaining);
+      p.inventory[id] = have - take;
+      remaining -= take;
+      if (remaining <= 0) break;
+    }
+  }
+
   questProgressFor(p, quest) {
     if (quest.type === 'collect') {
       const entries = Object.entries(quest.cost).map(([item, amt]) => ({
-        item, need: amt, have: Math.min(amt, p.inventory[item] || 0),
+        item, need: amt, have: Math.min(amt, this.inventoryQuantity(p, item)),
       }));
       const done = entries.every(e => e.have >= e.need) ? 1 : 0;
       return { entries, done, total: 1 };
@@ -425,7 +492,7 @@ class Game {
 
     if (quest.type === 'collect') {
       for (const [item, amt] of Object.entries(quest.cost)) {
-        p.inventory[item] -= amt;
+        this.consumeInventory(p, item, amt);
       }
     }
     delete p.activeQuests[questId];

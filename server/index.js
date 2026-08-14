@@ -49,9 +49,9 @@ io.on('connection', (socket) => {
     if (events) io.emit('events', events);
   });
 
-  socket.on('craft', (itemId) => {
+  socket.on('craft', (itemId, quality) => {
     if (!joined) return;
-    const result = game.craft(socket.id, itemId);
+    const result = game.craft(socket.id, itemId, quality);
     socket.emit('craftResult', result);
   });
 
