@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Wildholm — Multiplayer Survival RPG</title>
+<link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div id="loginScreen" class="overlay">
+  <div class="loginBox">
+    <h1>Wildholm</h1>
+    <p class="tagline">A multiplayer survival RPG</p>
+    <input id="nameInput" maxlength="16" placeholder="Your name" autocomplete="off" />
+    <button id="joinBtn">Enter the World</button>
+    <p class="hint">WASD to move · Left-click to gather/attack · E to open crafting · Space to eat berries</p>
+  </div>
+</div>
+
+<div id="game" class="hidden">
+  <canvas id="canvas"></canvas>
+
+  <div id="hud">
+    <div class="bar-group">
+      <div class="bar-label">HP</div>
+      <div class="bar hp"><div id="hpFill" class="fill"></div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label">Hunger</div>
+      <div class="bar hunger"><div id="hungerFill" class="fill"></div></div>
+    </div>
+    <div id="clock">☀ Day</div>
+  </div>
+
+  <div id="deathScreen" class="overlay hidden">
+    <div class="loginBox">
+      <h1>You died</h1>
+      <p>Respawning shortly…</p>
+    </div>
+  </div>
+
+  <div id="inventoryPanel" class="panel">
+    <h3>Inventory</h3>
+    <div id="inventoryList" class="itemGrid"></div>
+  </div>
+
+  <div id="craftingPanel" class="panel hidden">
+    <h3>Crafting <span class="closeHint">(E to close)</span></h3>
+    <div id="craftingList" class="itemGrid"></div>
+  </div>
+
+  <div id="chatBox">
+    <div id="chatLog"></div>
+    <input id="chatInput" maxlength="200" placeholder="Press Enter to chat" autocomplete="off" />
+  </div>
+
+  <div id="tooltip" class="hidden"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="js/data.js"></script>
+<script src="js/client.js"></script>
+</body>
+</html>
