@@ -1,7 +1,11 @@
+import * as Render3D from './render3d.js';
+
 (() => {
-  const canvas = document.getElementById('canvas');
-  const ctx = canvas.getContext('2d');
-  const TILE_PX = 40;
+  const canvas3d = document.getElementById('canvas3d');
+  const canvas2d = document.getElementById('canvas2d');
+  const ctx = canvas2d.getContext('2d');
+
+  Render3D.init(canvas3d);
 
   let socket = null;
   let myId = null;
@@ -15,8 +19,9 @@
   let aimDir = { x: 0, y: 1 };
 
   function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
+    canvas2d.width = window.innerWidth;
+    canvas2d.height = window.innerHeight;
+    Render3D.resize();
   }
   window.addEventListener('resize', resize);
   resize();
@@ -45,12 +50,15 @@
     socket.on('welcome', (data) => {
       myId = data.id;
       world = data.world;
+      Render3D.setWorld(world);
     });
     socket.on('state', (snap) => {
       state = snap;
       const p = snap.players.find(pl => pl.id === myId);
       if (p) myPos = { x: p.x, y: p.y };
       updateClock(snap);
+      Render3D.setDayPhase(snap.dayPhase, snap.isNight);
+      Render3D.syncState(snap, myId);
     });
     socket.on('you', (payload) => {
       me = payload;
@@ -83,8 +91,6 @@
       hideNpcDialogue();
     });
   }
-
-  const RESOURCE_ICONS = { tree: '🌲', rock: '🪨', iron_vein: '⛰️', bush: '🌿', shrub: '🌾', fishing_spot: '🐟' };
 
   const floatingTexts = [];
   function handleEvent(e) {
@@ -123,16 +129,16 @@
   }
   setInterval(sendInput, 60);
 
-  canvas.addEventListener('mousemove', (e) => {
-    const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
-    mouseWorld = screenToWorld(sx, sy);
+  canvas3d.addEventListener('mousemove', (e) => {
+    const ground = Render3D.groundPointFromMouse(e.clientX, e.clientY, canvas3d);
+    if (!ground) return;
+    mouseWorld = ground;
     const dx = mouseWorld.x - myPos.x, dy = mouseWorld.y - myPos.y;
     const len = Math.hypot(dx, dy) || 1;
     aimDir = { x: dx / len, y: dy / len };
   });
 
-  canvas.addEventListener('mousedown', (e) => {
+  canvas3d.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;
     doPrimaryAction();
   });
@@ -161,119 +167,41 @@
     else socket.emit('attack', { targetType: best.type, targetId: best.id });
   }
 
-  // ---------- Camera / rendering ----------
-  function screenToWorld(sx, sy) {
-    const cx = canvas.width / 2, cy = canvas.height / 2;
-    return {
-      x: myPos.x + (sx - cx) / TILE_PX,
-      y: myPos.y + (sy - cy) / TILE_PX,
-    };
-  }
-  function worldToScreen(x, y) {
-    const cx = canvas.width / 2, cy = canvas.height / 2;
-    return { x: cx + (x - myPos.x) * TILE_PX, y: cy + (y - myPos.y) * TILE_PX };
-  }
+  // ---------- Render loop ----------
+  // The 3D world/entities are drawn by Render3D (WebGL). This loop only
+  // drives the camera each frame and paints a thin 2D overlay (health bars,
+  // floating damage/gather text) on top, projected from world space.
+  function animate() {
+    requestAnimationFrame(animate);
+    ctx.clearRect(0, 0, canvas2d.width, canvas2d.height);
+    if (!world || !state) return;
 
-  function draw() {
-    requestAnimationFrame(draw);
-    if (!world || !state) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, canvas.width, canvas.height); return; }
+    Render3D.updateCamera(myPos, aimDir);
+    Render3D.render();
 
-    const cx = canvas.width / 2, cy = canvas.height / 2;
-    const startTileX = Math.floor(myPos.x - cx / TILE_PX) - 1;
-    const endTileX = Math.ceil(myPos.x + cx / TILE_PX) + 1;
-    const startTileY = Math.floor(myPos.y - cy / TILE_PX) - 1;
-    const endTileY = Math.ceil(myPos.y + cy / TILE_PX) + 1;
-
-    ctx.fillStyle = '#02040a';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    for (let ty = startTileY; ty <= endTileY; ty++) {
-      for (let tx = startTileX; tx <= endTileX; tx++) {
-        if (tx < 0 || ty < 0 || tx >= world.size || ty >= world.size) continue;
-        const tile = world.tiles[ty * world.size + tx];
-        const s = worldToScreen(tx, ty);
-        ctx.fillStyle = TILE_COLORS[tile] || '#333';
-        ctx.fillRect(Math.round(s.x), Math.round(s.y), TILE_PX + 1, TILE_PX + 1);
-      }
-    }
-
-    // resources
     for (const r of state.resources) {
-      const s = worldToScreen(r.x, r.y);
-      ctx.font = `${TILE_PX * 0.8}px sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      const icon = RESOURCE_ICONS[r.type] || '🌿';
-      ctx.fillText(icon, s.x, s.y);
-      if (r.hp < r.maxHp) drawBar(s.x - 14, s.y - TILE_PX * 0.55, 28, 4, r.hp / r.maxHp, '#8bc34a');
-    }
-
-    // structures
-    if (state.structures) {
-      for (const st of state.structures) {
-        const s = worldToScreen(st.x, st.y);
-        ctx.font = `${TILE_PX * 0.8}px sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        const stIcon = st.type === 'campfire' ? '🔥' : st.type === 'furnace' ? '🏭' : '🧱';
-        ctx.fillText(stIcon, s.x, s.y);
+      if (r.hp < r.maxHp) {
+        const s = Render3D.projectToScreen(r.x, r.y, 1.1, canvas3d);
+        if (!s.behind) drawBar(s.x - 14, s.y, 28, 4, r.hp / r.maxHp, '#8bc34a');
       }
     }
-
-    // npcs
-    for (const n of state.npcs || []) {
-      const s = worldToScreen(n.x, n.y);
-      ctx.font = `${TILE_PX * 0.85}px sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText(n.icon || '🧑', s.x, s.y);
-      ctx.fillStyle = '#f5c542';
-      ctx.font = '12px sans-serif';
-      ctx.fillText(n.name, s.x, s.y - TILE_PX * 0.6);
-    }
-
-    // mobs
     for (const m of state.mobs) {
-      const s = worldToScreen(m.x, m.y);
-      ctx.font = `${TILE_PX * 0.75}px sans-serif`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillText('🐺', s.x, s.y);
-      drawBar(s.x - 14, s.y - TILE_PX * 0.55, 28, 4, m.hp / m.maxHp, '#e53935');
+      const s = Render3D.projectToScreen(m.x, m.y, 0.85, canvas3d);
+      if (!s.behind) drawBar(s.x - 14, s.y, 28, 4, m.hp / m.maxHp, '#e53935');
     }
-
-    // players
     for (const p of state.players) {
-      const s = worldToScreen(p.x, p.y);
-      if (!p.alive) {
-        ctx.font = `${TILE_PX * 0.7}px sans-serif`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText('💀', s.x, s.y);
-        continue;
-      }
-      ctx.beginPath();
-      ctx.fillStyle = p.id === myId ? '#5ba848' : '#4586c9';
-      ctx.arc(s.x, s.y, TILE_PX * 0.32, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#111'; ctx.lineWidth = 2; ctx.stroke();
-
-      // facing indicator
-      ctx.beginPath();
-      ctx.fillStyle = '#fff';
-      const fx = s.x + p.dir.x * TILE_PX * 0.4, fy = s.y + p.dir.y * TILE_PX * 0.4;
-      ctx.arc(fx, fy, 3, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.fillStyle = '#fff';
-      ctx.font = '12px sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText(p.name, s.x, s.y - TILE_PX * 0.55);
-      drawBar(s.x - 16, s.y - TILE_PX * 0.48, 32, 4, p.hp / p.maxHp, '#ef5350');
+      if (!p.alive) continue;
+      const s = Render3D.projectToScreen(p.x, p.y, 1.85, canvas3d);
+      if (!s.behind) drawBar(s.x - 16, s.y, 32, 4, p.hp / p.maxHp, '#ef5350');
     }
 
-    // floating texts
     for (let i = floatingTexts.length - 1; i >= 0; i--) {
       const f = floatingTexts[i];
       f.life -= 1 / 60;
       if (f.life <= 0) { floatingTexts.splice(i, 1); continue; }
       if (f.x !== null) {
-        const s = worldToScreen(f.x, f.y - (1.2 - f.life));
+        const s = Render3D.projectToScreen(f.x, f.y, 1.4 + (1.2 - f.life) * 0.8, canvas3d);
+        if (s.behind) continue;
         ctx.fillStyle = f.color || 'rgba(255,255,150,' + Math.min(1, f.life) + ')';
         ctx.globalAlpha = Math.min(1, f.life);
         ctx.font = 'bold 14px sans-serif';
@@ -282,26 +210,6 @@
         ctx.globalAlpha = 1;
       }
     }
-
-    // night overlay
-    if (state.dayPhase !== undefined) {
-      const night = state.isNight;
-      const darkness = nightDarkness(state.dayPhase);
-      if (darkness > 0) {
-        ctx.fillStyle = `rgba(5,8,20,${darkness})`;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-      }
-    }
-  }
-
-  function nightDarkness(phase) {
-    // smooth in/out around the night window (0.55 - 0.97)
-    const inStart = 0.45, inEnd = 0.6, outStart = 0.9, outEnd = 1.0;
-    if (phase < inStart) return 0;
-    if (phase < inEnd) return (phase - inStart) / (inEnd - inStart) * 0.55;
-    if (phase < outStart) return 0.55;
-    if (phase < outEnd) return 0.55 * (1 - (phase - outStart) / (outEnd - outStart));
-    return 0;
   }
 
   function drawBar(x, y, w, h, pct, color) {
@@ -311,7 +219,7 @@
     ctx.fillRect(x, y, Math.max(0, w * Math.min(1, Math.max(0, pct))), h);
   }
 
-  requestAnimationFrame(draw);
+  requestAnimationFrame(animate);
 
   // ---------- HUD ----------
   const hpFill = document.getElementById('hpFill');
@@ -493,6 +401,7 @@
   }
 
   function showNpcDialogue(data) {
+    if (!data.ok) { flashMessage(data.reason || 'cannot talk right now'); return; }
     currentDialogue = data;
     npcDialogueEl.classList.remove('hidden');
     npcNameEl.textContent = data.npc ? data.npc.name : 'Villager';

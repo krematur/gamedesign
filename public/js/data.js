@@ -103,13 +103,5 @@ const RECIPES = [
   { result: 'iron_legs', count: 1, cost: { iron_ingot: 3, fiber: 2 }, requiresStructure: 'furnace', requiresQuest: 'blacksmithing' },
 ];
 
-const TILE_COLORS = {
-  0: '#4c7a3a', // grass
-  1: '#2f5a2c', // forest
-  2: '#2a5f8a', // water
-  3: '#7d7d72', // stone
-  4: '#d8c98a', // sand
-};
-
 const ARMOR_SLOTS = ['head', 'chest', 'legs'];
 const ARMOR_SLOT_ICON = { head: '⛑️', chest: '🛡️', legs: '🦵' };

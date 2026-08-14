@@ -14,12 +14,13 @@
     <p class="tagline">A multiplayer survival RPG</p>
     <input id="nameInput" maxlength="16" placeholder="Your name" autocomplete="off" />
     <button id="joinBtn">Enter the World</button>
-    <p class="hint">WASD to move · Left-click to gather/attack · E to open crafting · Space to eat berries</p>
+    <p class="hint">WASD to move · Mouse to aim the camera/actions · Left-click to gather/attack · E to open crafting · Space to eat berries</p>
   </div>
 </div>
 
 <div id="game" class="hidden">
-  <canvas id="canvas"></canvas>
+  <canvas id="canvas3d"></canvas>
+  <canvas id="canvas2d"></canvas>
 
   <div id="hud">
     <div class="bar-group">
@@ -80,6 +81,6 @@
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="js/data.js"></script>
-<script src="js/client.js"></script>
+<script type="module" src="js/client.js"></script>
 </body>
 </html>

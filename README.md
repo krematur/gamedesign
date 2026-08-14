@@ -1,11 +1,17 @@
 # Wildholm — Multiplayer Survival RPG
 
-A browser-based multiplayer survival RPG. Node.js + Socket.IO server that
-runs an authoritative simulation of a shared world; players connect through
-a lightweight HTML5 canvas client.
+A browser-based multiplayer survival RPG rendered in full 3D. Node.js +
+Socket.IO server that runs an authoritative simulation of a shared world;
+players connect through a Three.js/WebGL client with a third-person camera.
 
 ## Features
 
+- Real 3D world (Three.js/WebGL): a smooth heightmapped terrain mesh (water
+  sunken, stone raised) with low-poly 3D models for every tree, rock, bush,
+  fish spot, mob, player, NPC, and structure; a third-person camera follows
+  the player and orbits toward the aim direction
+- Day/night cycle drives real lighting — sun/hemisphere light intensity, sky
+  color, and fog all shift between day and a darker, foggier night
 - Procedurally generated island world (grass, forest, stone, sand, water biomes)
 - Real-time multiplayer via WebSockets — every player sees the same shared world
 - Gathering: chop trees for wood, mine rocks and iron veins, pick berry
@@ -57,6 +63,8 @@ Environment variables:
 ## Controls
 
 - `WASD` / arrow keys — move
+- Mouse — aim (raycasts onto the ground to steer the camera and pick
+  gather/attack targets)
 - Left-click — gather the nearest resource or attack the nearest mob/player
   within reach (aims toward your cursor)
 - `E` — open/close the crafting menu
@@ -81,12 +89,20 @@ Environment variables:
   (with quality rolls), crafting (with quality selection), combat, armor
   damage reduction, mob AI, day/night cycle, quest tracking, tick loop
 - `server/index.js` — Express static file server + Socket.IO event wiring
-- `public/` — canvas-based client (rendering, input, HUD, inventory, armor
-  slots, crafting UI with quality selector, NPC dialogue, quest tracker, chat)
+- `public/js/render3d.js` — Three.js scene: terrain mesh generation, entity
+  mesh builders, day/night lighting, camera follow, mouse-to-ground raycasting,
+  and world-to-screen projection (for the HTML/2D HUD overlay)
+- `public/js/client.js` — networking, input, and all DOM-based UI (HUD,
+  inventory, armor slots, crafting with quality selector, NPC dialogue,
+  quest tracker, chat); delegates all 3D rendering to `render3d.js`
+- `public/vendor/` — vendored Three.js build (served locally, no CDN)
 
 The server runs a fixed-timestep tick loop (~6.6 Hz) that updates the whole
 simulation and broadcasts a state snapshot to every connected client, which
-keeps all players in sync without any client-side authority.
+keeps all players in sync without any client-side authority. The client
+renders two stacked canvases: a WebGL canvas for the 3D world and a
+transparent 2D canvas on top for HUD elements (health bars, floating text)
+projected from world space via the Three.js camera.
 
 ## Roadmap ideas
 
@@ -97,3 +113,5 @@ keeps all players in sync without any client-side authority.
 - Deeper fishing (bait, rare/legendary catches, different water biomes)
 - Player-owned bases with durability and raiding
 - Branching quest lines, multiple NPCs, and repeatable/daily quests
+- Animated/rigged character models, instanced rendering for very large
+  worlds, and a first-person camera option
