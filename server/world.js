@@ -65,7 +65,7 @@ function generateWorld(seed = 1337) {
         tile = TILE.SAND;
       } else if (n < 0.58) {
         tile = TILE.GRASS;
-      } else if (n < 0.82) {
+      } else if (n < 0.72) {
         tile = TILE.FOREST;
       } else {
         tile = TILE.STONE;

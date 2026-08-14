@@ -200,6 +200,20 @@ function buildFishingSpot() {
   m.position.y = -0.24;
   return m;
 }
+function buildOreVein(speckColor, speckEmissive) {
+  const g = buildRock('#8a8a84');
+  for (let i = 0; i < 3; i++) {
+    const speck = new THREE.Mesh(new THREE.DodecahedronGeometry(0.1, 0), new THREE.MeshStandardMaterial({ color: speckColor, emissive: speckEmissive, emissiveIntensity: 0.5, flatShading: true }));
+    speck.position.set((Math.random() - 0.5) * 0.4, 0.35 + Math.random() * 0.2, (Math.random() - 0.5) * 0.4);
+    g.add(speck);
+  }
+  return g;
+}
+function buildClayPit() {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.45, 0.1, 10), new THREE.MeshStandardMaterial({ color: '#a8643a', flatShading: true }));
+  m.position.y = -0.05;
+  return m;
+}
 function buildPerson(bodyColor, headColor) {
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.5, 4, 8), new THREE.MeshStandardMaterial({ color: bodyColor }));
@@ -209,16 +223,53 @@ function buildPerson(bodyColor, headColor) {
   g.add(body, head);
   return g;
 }
-function buildMob() {
+
+// Quadruped builder shared by all animal mobs — a body box + head + four
+// stub legs, parameterized so each species reads as visually distinct.
+function buildQuadruped({ bodyColor, headColor, bodyScale = 1, headScale = 1, earType = 'round', tusks = false }) {
   const g = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.35, 0.75), new THREE.MeshStandardMaterial({ color: '#5b5b5b', flatShading: true }));
-  body.position.y = 0.3;
-  const head = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.4, 6), new THREE.MeshStandardMaterial({ color: '#4a4a4a', flatShading: true }));
-  head.rotation.x = Math.PI / 2;
-  head.position.set(0, 0.35, 0.5);
+  const bodyMat = new THREE.MeshStandardMaterial({ color: bodyColor, flatShading: true });
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.45 * bodyScale, 0.32 * bodyScale, 0.7 * bodyScale), bodyMat);
+  body.position.y = 0.22 * bodyScale + 0.12;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.28 * headScale, 0.26 * headScale, 0.3 * headScale), new THREE.MeshStandardMaterial({ color: headColor || bodyColor, flatShading: true }));
+  head.position.set(0, 0.3 * bodyScale + 0.12, 0.45 * bodyScale);
   g.add(body, head);
+
+  const earGeo = earType === 'long'
+    ? new THREE.ConeGeometry(0.05, 0.28, 4)
+    : new THREE.ConeGeometry(0.07, 0.14, 4);
+  for (const side of [-1, 1]) {
+    const ear = new THREE.Mesh(earGeo, bodyMat);
+    ear.position.set(side * 0.1 * headScale, head.position.y + 0.16 * headScale, head.position.z - 0.02);
+    g.add(ear);
+  }
+  if (tusks) {
+    for (const side of [-1, 1]) {
+      const tusk = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.16, 4), new THREE.MeshStandardMaterial({ color: '#f2ecd8' }));
+      tusk.rotation.x = Math.PI / 2.4;
+      tusk.position.set(side * 0.08, head.position.y - 0.08, head.position.z + 0.14);
+      g.add(tusk);
+    }
+  }
+  const legGeo = new THREE.CylinderGeometry(0.05 * bodyScale, 0.05 * bodyScale, 0.24 * bodyScale, 5);
+  for (const dx of [-1, 1]) {
+    for (const dz of [-1, 1]) {
+      const leg = new THREE.Mesh(legGeo, bodyMat);
+      leg.position.set(dx * 0.15 * bodyScale, 0.12 * bodyScale, dz * 0.25 * bodyScale);
+      g.add(leg);
+    }
+  }
   return g;
 }
+
+const MOB_BUILDERS = {
+  wolf: () => buildQuadruped({ bodyColor: '#5b5b5b', headColor: '#4a4a4a', earType: 'round' }),
+  rabbit: () => buildQuadruped({ bodyColor: '#c9b896', bodyScale: 0.55, headScale: 0.8, earType: 'long' }),
+  deer: () => buildQuadruped({ bodyColor: '#a9773f', bodyScale: 1.1, headScale: 0.9, earType: 'long' }),
+  boar: () => buildQuadruped({ bodyColor: '#4a3a2a', bodyScale: 1.05, headScale: 1.0, earType: 'round', tusks: true }),
+  bear: () => buildQuadruped({ bodyColor: '#3a2a1c', bodyScale: 1.6, headScale: 1.2, earType: 'round' }),
+};
+
 function buildNpc() {
   const g = buildPerson('#3a5fa0', '#e8c39e');
   const hat = new THREE.Mesh(new THREE.ConeGeometry(0.25, 0.35, 8), new THREE.MeshStandardMaterial({ color: '#f5c542', flatShading: true }));
@@ -238,9 +289,25 @@ function buildStructure(type) {
     g.add(logs, flame, light);
     return g;
   }
+  if (type === 'torch') {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.8, 6), new THREE.MeshStandardMaterial({ color: '#6b4a2c' }));
+    pole.position.y = 0.4;
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.22, 6), new THREE.MeshStandardMaterial({ color: '#ff9c42', emissive: '#c9410a', emissiveIntensity: 0.9 }));
+    flame.position.y = 0.9;
+    const light = new THREE.PointLight('#ffab5c', 0.9, 4);
+    light.position.y = 0.9;
+    g.add(pole, flame, light);
+    return g;
+  }
   if (type === 'furnace') {
     const m = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.9, 0.7), new THREE.MeshStandardMaterial({ color: '#4a4a48', flatShading: true }));
     m.position.y = 0.45;
+    return m;
+  }
+  if (type === 'reinforced_wall') {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.1, 0.25), new THREE.MeshStandardMaterial({ color: '#a85c42', flatShading: true }));
+    m.position.y = 0.55;
     return m;
   }
   const m = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.1, 0.2), new THREE.MeshStandardMaterial({ color: '#8a6b42', flatShading: true }));
@@ -251,6 +318,9 @@ function buildStructure(type) {
 const RESOURCE_BUILDERS = {
   tree: buildTree, rock: () => buildRock(), iron_vein: buildIronVein,
   bush: buildBush, shrub: buildShrub, fishing_spot: buildFishingSpot,
+  coal_vein: () => buildOreVein('#1a1a1a', '#000000'),
+  gold_vein: () => buildOreVein('#f5c542', '#8a6a10'),
+  clay_pit: buildClayPit,
 };
 
 // ---------- Per-frame sync ----------
@@ -296,7 +366,8 @@ export function syncState(state, myId) {
 
   for (const m of state.mobs) {
     seen.add('m:' + m.id);
-    const obj = upsert('m:' + m.id, buildMob, m.x, m.y);
+    const builder = MOB_BUILDERS[m.type] || MOB_BUILDERS.wolf;
+    const obj = upsert('m:' + m.id, builder, m.x, m.y);
     if (obj._lastX !== undefined) {
       const dx = m.x - obj._lastX, dy = m.y - obj._lastY;
       if (dx || dy) obj.rotation.y = Math.atan2(dx, dy);

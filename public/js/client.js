@@ -250,7 +250,7 @@ import * as Render3D from './render3d.js';
     for (const [item, count] of Object.entries(me.inventory)) {
       if (!count) continue;
       const info = getItemInfo(item);
-      if (info.armorSlot) continue; // shown in the armor slot row instead
+      if (info.armorSlot || info.accessorySlot) continue; // shown in the equipment row instead
       const slot = document.createElement('div');
       slot.className = 'itemSlot' + (me.equipped === item ? ' equipped' : '');
       slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="count">${count}</div>`;
@@ -280,24 +280,51 @@ import * as Render3D from './render3d.js';
       }
       armorSlotsEl.appendChild(div);
     }
-    // owned-but-unequipped armor pieces still need a slot to click on
+    // accessory slot
+    {
+      const div = document.createElement('div');
+      if (me.accessory) {
+        const info = getItemInfo(me.accessory);
+        div.className = 'itemSlot armorSlot equipped';
+        div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div>`;
+        div.title = 'Click to unequip';
+        div.addEventListener('click', () => socket.emit('equipAccessory', me.accessory));
+      } else {
+        div.className = 'itemSlot armorSlot empty';
+        div.innerHTML = `<div>💍</div><div class="label">trinket</div>`;
+      }
+      armorSlotsEl.appendChild(div);
+    }
+    // owned-but-unequipped armor/accessory pieces still need a slot to click on
     for (const [item, count] of Object.entries(me.inventory)) {
       if (!count) continue;
       const info = getItemInfo(item);
-      if (!info || !info.armorSlot) continue;
-      if (me.armor[info.armorSlot] === item) continue; // already shown above
-      const div = document.createElement('div');
-      div.className = 'itemSlot armorSlot';
-      div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="count">${count}</div>`;
-      div.title = 'Click to equip';
-      div.addEventListener('click', () => socket.emit('equipArmor', item));
-      armorSlotsEl.appendChild(div);
+      if (!info) continue;
+      if (info.armorSlot) {
+        if (me.armor[info.armorSlot] === item) continue; // already shown above
+        const div = document.createElement('div');
+        div.className = 'itemSlot armorSlot';
+        div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="count">${count}</div>`;
+        div.title = 'Click to equip';
+        div.addEventListener('click', () => socket.emit('equipArmor', item));
+        armorSlotsEl.appendChild(div);
+      } else if (info.accessorySlot) {
+        if (me.accessory === item) continue; // already shown above
+        const div = document.createElement('div');
+        div.className = 'itemSlot armorSlot';
+        div.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="count">${count}</div>`;
+        div.title = 'Click to equip';
+        div.addEventListener('click', () => socket.emit('equipAccessory', item));
+        armorSlotsEl.appendChild(div);
+      }
     }
   }
 
   function onInventoryClick(item, info) {
     if (info.equip) {
       socket.emit('equip', me.equipped === item ? null : item);
+    } else if (info.accessorySlot) {
+      socket.emit('equipAccessory', item);
     } else if (info.edible) {
       socket.emit('eat', item);
     } else if (info.placeable) {
@@ -331,6 +358,7 @@ import * as Render3D from './render3d.js';
     craftingList.innerHTML = '';
     for (const recipe of RECIPES) {
       const info = getItemInfo(recipe.result);
+      const label = info.label + (recipe.labelSuffix || '');
       const structureOk = !recipe.requiresStructure || (me.nearStructures || []).includes(recipe.requiresStructure);
       const questOk = !recipe.requiresQuest || (me.completedQuests || []).includes(recipe.requiresQuest);
       const locked = !questOk;
@@ -347,7 +375,7 @@ import * as Render3D from './render3d.js';
       else if (!structureOk) note = `<div class="lockNote">need ${recipe.requiresStructure}</div>`;
 
       const baseCostStr = Object.entries(recipe.cost).map(([it, amt]) => `${amt} ${getItemInfo(it).icon}`).join(' ');
-      slot.innerHTML = `<div>${info.icon}</div><div class="label">${info.label}</div><div class="cost">${baseCostStr}</div>${note}`;
+      slot.innerHTML = `<div>${info.icon}</div><div class="label">${label}</div><div class="cost">${baseCostStr}</div>${note}`;
       slot.title = locked ? 'Complete the related quest to unlock this recipe' : '';
 
       if (!locked && structureOk && recipe.qualityCraftable) {
@@ -360,13 +388,13 @@ import * as Render3D from './render3d.js';
           btn.textContent = q === 'normal' ? 'Normal' : QUALITY_PREFIX[q].trim();
           const ok = canAffordRecipe(recipe, q);
           btn.disabled = !ok;
-          btn.title = ok ? `Craft ${QUALITY_PREFIX[q]}${info.label.replace(/^(Crude |Fine )/, '')}` : 'Not enough materials at this quality';
-          btn.addEventListener('click', (ev) => { ev.stopPropagation(); if (ok) socket.emit('craft', recipe.result, q); });
+          btn.title = ok ? `Craft ${QUALITY_PREFIX[q]}${label}` : 'Not enough materials at this quality';
+          btn.addEventListener('click', (ev) => { ev.stopPropagation(); if (ok) socket.emit('craft', recipe.id, q); });
           qRow.appendChild(btn);
         }
         slot.appendChild(qRow);
       } else if (!locked && structureOk) {
-        slot.addEventListener('click', () => { if (canAffordRecipe(recipe, 'normal')) socket.emit('craft', recipe.result); });
+        slot.addEventListener('click', () => { if (canAffordRecipe(recipe, 'normal')) socket.emit('craft', recipe.id); });
       }
       craftingList.appendChild(slot);
     }

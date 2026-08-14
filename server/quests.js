@@ -2,7 +2,7 @@
 // offer a linear quest chain — one quest unlocks the next once turned in.
 
 const NPCS = [
-  { id: 'elder_rowan', name: 'Elder Rowan', icon: '🧙', questChain: ['first_steps', 'hunter', 'angler', 'blacksmithing', 'protector'] },
+  { id: 'elder_rowan', name: 'Elder Rowan', icon: '🧙', questChain: ['first_steps', 'hunter', 'angler', 'blacksmithing', 'protector', 'mastersmith'] },
 ];
 
 const QUESTS = {
@@ -57,6 +57,16 @@ const QUESTS = {
     amount: 5,
     reward: { items: { iron_ingot: 5, wolf_hide: 3 } },
     rewardText: '5 iron ingots, 3 wolf hides',
+  },
+  mastersmith: {
+    id: 'mastersmith',
+    npc: 'elder_rowan',
+    title: 'Master Smith',
+    desc: 'True steel needs a hotter fire. Bring the smith 8 coal and 4 iron ingots.',
+    type: 'collect',
+    cost: { coal: 8, iron_ingot: 4 },
+    reward: { items: { steel_ingot: 2 }, unlocks: ['mastersmith'] },
+    rewardText: '2 steel ingots, unlocks steel tools & armor',
   },
 };
 

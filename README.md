@@ -14,35 +14,52 @@ players connect through a Three.js/WebGL client with a third-person camera.
   color, and fog all shift between day and a darker, foggier night
 - Procedurally generated island world (grass, forest, stone, sand, water biomes)
 - Real-time multiplayer via WebSockets — every player sees the same shared world
-- Gathering: chop trees for wood, mine rocks and iron veins, pick berry
-  bushes for food, harvest shrubs for fiber, and fish shoreline waters for
-  raw fish (requires a fishing rod)
-- Resource quality tiers: every gathered material (wood, stone, fiber, iron
-  ore, fish) drops as **Crude**, **Normal**, or **Fine** quality — better
-  tools improve your odds of a Fine catch. Crafting consumes a specific
-  quality tier and the recipe UI lets you pick which one to use, producing
-  a matching-quality result: a Fine Axe hits harder than any axe a "normal"
-  recipe alone could ever produce. This applies to tools/weapons, iron
-  ingots, and cooked food (meat and fish)
-- Tiered gear progression:
-  - Tools/weapons: stone tier (axe, pickaxe, spear) → iron tier (iron axe,
-    iron pickaxe, iron sword), smelted from iron ore at a furnace — each
-    additionally craftable at Crude/Normal/Fine quality
-  - Armor: three slots (head/chest/legs) across cloth → leather → iron
-    materials, each reducing incoming damage (stacking, capped at 60%)
-- Crafting: full recipe list in `server/items.js`, including structures
-  (campfire, furnace, walls) and gated recipes that require a nearby
-  structure and/or a completed quest
-- Combat: melee attacks against wildlife (wolves) and other players, with
-  armor mitigating damage taken
+- Gathering: chop trees for wood, mine rocks/iron/coal/gold veins, dig clay
+  pits, pick berry bushes for food, harvest shrubs for fiber, and fish
+  shoreline waters for raw fish (requires a fishing rod)
+- Wildlife ecosystem (`server/mobs.js`): five animal types with distinct AI —
+  wolves and bears hunt the nearest player (bears hit much harder and are
+  rarer); rabbits and deer flee on sight; boars wander peacefully but turn
+  and fight back once attacked. Each drops its own materials (hides, furs,
+  tusks, claws) alongside meat, and spawns in the biomes and day/night
+  conditions that suit it (wolves favor night, grazers favor day)
+- Resource quality tiers: every gathered material drops as **Crude**,
+  **Normal**, or **Fine** quality — better tools improve your odds of a
+  Fine catch. Crafting consumes a specific quality tier and the recipe UI
+  lets you pick which one to use, producing a matching-quality result: a
+  Fine Axe hits harder than any axe a "normal" recipe alone could ever
+  produce. Applies to tools/weapons, all smelted ingots, and cooked food
+- Tiered gear progression, five material rungs deep:
+  - Tools/weapons: stone (axe, pickaxe, spear) → iron → **steel** (smelted
+    from iron ingot + coal at a furnace, gated behind the Master Smith
+    quest) — each tier additionally craftable at Crude/Normal/Fine quality
+  - Situational weapons: a Tusk Dagger (fast, low damage) and Claw
+    Gauntlets (slow, heavy damage) trade the standard damage/speed curve
+    for a different playstyle, each with its own attack cooldown
+  - Armor: three slots (head/chest/legs) across cloth → leather → **heavy
+    hide** (bear-hunting reward) → iron → **steel**, each reducing incoming
+    damage (stacking, capped at 60%). Leather can be crafted from either
+    wolf hide or deer hide — alternate recipes for the same item let you
+    hunt whichever animal you find
+  - A fourth equip slot, accessories: a Gold Ring (smelted from gold ore +
+    coal) grants a passive +1 bonus to every gather yield
+- Crafting: 40+ recipes in `server/items.js`, including structures
+  (campfire, furnace, walls, reinforced brick walls, torches) and gated
+  recipes that require a nearby structure and/or a completed quest. Recipes
+  have a unique id independent of their output item, so multiple recipes
+  can produce the same result via different ingredients
+- Combat: melee attacks against wildlife and other players, with armor
+  mitigating damage taken and per-weapon attack speed
 - Survival stats: health and hunger, with starvation damage and natural regen
-- Day/night cycle that darkens the world and spawns more wolves at night
-- Quests & NPCs: Elder Rowan offers a linear quest chain (`server/quests.js`)
+- Day/night cycle that darkens the world and shifts which animals spawn
+- Quests & NPCs: Elder Rowan offers a six-quest chain (`server/quests.js`)
   — gather supplies, hunt wolves, catch fish, mine iron for the blacksmith,
-  defend the village — that unlocks leather and iron gear recipes as you
-  progress. Quest turn-ins accept any quality tier of a material
-- Building: place campfires (needed to cook meat/fish) and furnaces (needed
-  to smelt iron and craft iron gear)
+  defend the village, then supply coal for the Master Smith — that unlocks
+  leather, iron, and finally steel gear recipes as you progress. Quest
+  turn-ins accept any quality tier of a material
+- Building: place campfires (needed to cook meat/fish and fire clay into
+  brick), furnaces (needed to smelt iron/gold/steel and craft that gear),
+  walls/reinforced walls, and torches for light
 - In-world chat
 
 ## Running locally
@@ -70,7 +87,8 @@ Environment variables:
 - `E` — open/close the crafting menu
 - `Space` — eat the best available food in your inventory
 - Click an inventory item to equip a tool/weapon, eat food, or place a
-  structure in front of you; click an armor piece to equip/unequip it
+  structure in front of you; click an armor or accessory piece to
+  equip/unequip it
 - In the crafting menu, tiered recipes show Crude/Normal/Fine buttons —
   pick a tier to craft with materials of that quality
 - Click an NPC (within range) to talk, accept quests, and turn them in
@@ -83,11 +101,16 @@ Environment variables:
 - `server/quality.js` — Crude/Normal/Fine tier definitions, gather-quality
   rolls, and item id helpers (`wood` ↔ `wood_fine`)
 - `server/items.js` — item and crafting recipe definitions; tierable base
-  items auto-generate their Crude/Fine variants with scaled stats
+  items auto-generate their Crude/Fine variants with scaled stats; recipes
+  have an `id` distinct from their `result` so multiple recipes can share
+  an output item
+- `server/mobs.js` — animal type definitions (stats, AI behavior, spawn
+  biomes, drop tables) that `game.js` drives generically
 - `server/quests.js` — NPC and quest chain definitions
 - `server/game.js` — authoritative game simulation: movement, gathering
-  (with quality rolls), crafting (with quality selection), combat, armor
-  damage reduction, mob AI, day/night cycle, quest tracking, tick loop
+  (with quality rolls), crafting (with quality selection), combat (with
+  per-weapon attack speed), armor damage reduction, data-driven mob AI
+  (aggressive/flee/neutral), day/night cycle, quest tracking, tick loop
 - `server/index.js` — Express static file server + Socket.IO event wiring
 - `public/js/render3d.js` — Three.js scene: terrain mesh generation, entity
   mesh builders, day/night lighting, camera follow, mouse-to-ground raycasting,
@@ -108,10 +131,11 @@ projected from world space via the Three.js camera.
 
 - Persistent player accounts / save files
 - Larger world with chunked streaming instead of full-state broadcast
-- More biomes, creatures, and additional gear tiers beyond iron/Fine
+- More biomes, creatures, and gear tiers beyond steel/Fine
 - Quality tiers for armor (currently only tools/weapons/food are tiered)
 - Deeper fishing (bait, rare/legendary catches, different water biomes)
 - Player-owned bases with durability and raiding
 - Branching quest lines, multiple NPCs, and repeatable/daily quests
-- Animated/rigged character models, instanced rendering for very large
-  worlds, and a first-person camera option
+- Animated/rigged character and animal models, instanced rendering for very
+  large worlds, and a first-person camera option
+- More accessory effects and additional accessory slots

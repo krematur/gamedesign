@@ -49,9 +49,9 @@ io.on('connection', (socket) => {
     if (events) io.emit('events', events);
   });
 
-  socket.on('craft', (itemId, quality) => {
+  socket.on('craft', (recipeId, quality) => {
     if (!joined) return;
-    const result = game.craft(socket.id, itemId, quality);
+    const result = game.craft(socket.id, recipeId, quality);
     socket.emit('craftResult', result);
   });
 
@@ -63,6 +63,11 @@ io.on('connection', (socket) => {
   socket.on('equipArmor', (itemId) => {
     if (!joined) return;
     game.equipArmor(socket.id, itemId);
+  });
+
+  socket.on('equipAccessory', (itemId) => {
+    if (!joined) return;
+    game.equipAccessory(socket.id, itemId);
   });
 
   socket.on('talkNpc', (npcId) => {

@@ -1,7 +1,8 @@
-const { generateWorld, TILE, isWalkable, WORLD_SIZE, makeRng } = require('./world');
+const { generateWorld, TILE, isWalkable, tileAt, WORLD_SIZE, makeRng } = require('./world');
 const { ITEMS, RECIPES } = require('./items');
 const { NPCS, QUESTS } = require('./quests');
 const { QUALITY_TIERS, qualifiedId, rollGatherQuality } = require('./quality');
+const { MOB_TYPES, rollDrops } = require('./mobs');
 
 const TICK_MS = 150;
 const DAY_LENGTH_TICKS = Math.round((6 * 60 * 1000) / TICK_MS); // ~6 min full day/night cycle
@@ -13,10 +14,10 @@ const ATTACK_RANGE = 1.6;
 const ATTACK_COOLDOWN_MS = 500;
 const GATHER_COOLDOWN_MS = 550;
 const RESOURCE_RESPAWN_TICKS = Math.round(30000 / TICK_MS);
-const MAX_MOBS = 24;
-const MOB_AGGRO_RANGE = 6;
+const MAX_MOBS = 40;
 const MOB_ATTACK_RANGE = 1.2;
 const MOB_ATTACK_COOLDOWN_MS = 900;
+const MOB_SPAWN_CHECK_CHANCE = 0.03; // rolled once per tick when under the population cap
 const STRUCTURE_RANGE = 3;
 const NPC_INTERACT_RANGE = 3;
 const MAX_ARMOR_REDUCTION = 0.6;
@@ -70,14 +71,20 @@ class Game {
         const r = this.rng();
         if (t === TILE.FOREST && r < 0.12) {
           this.addResource('tree', x + 0.5, y + 0.5);
-        } else if (t === TILE.STONE && r < 0.025) {
+        } else if (t === TILE.STONE && r < 0.035) {
           this.addResource('iron_vein', x + 0.5, y + 0.5);
-        } else if (t === TILE.STONE && r < 0.18) {
+        } else if (t === TILE.STONE && r < 0.065) {
+          this.addResource('coal_vein', x + 0.5, y + 0.5);
+        } else if (t === TILE.STONE && r < 0.08) {
+          this.addResource('gold_vein', x + 0.5, y + 0.5);
+        } else if (t === TILE.STONE && r < 0.24) {
           this.addResource('rock', x + 0.5, y + 0.5);
         } else if (t === TILE.GRASS && r < 0.03) {
           this.addResource('bush', x + 0.5, y + 0.5);
         } else if (t === TILE.GRASS && r < 0.055) {
           this.addResource('shrub', x + 0.5, y + 0.5);
+        } else if (t === TILE.SAND && this.hasWalkableNeighbor(x, y) && r < 0.35) {
+          this.addResource('clay_pit', x + 0.5, y + 0.5);
         } else if (t === TILE.WATER && this.hasWalkableNeighbor(x, y) && r < 0.22) {
           this.addResource('fishing_spot', x + 0.5, y + 0.5);
         }
@@ -87,7 +94,10 @@ class Game {
 
   addResource(type, x, y) {
     const id = 'r' + genId();
-    const hpByType = { tree: 30, rock: 40, bush: 12, iron_vein: 50, shrub: 10, fishing_spot: 15 };
+    const hpByType = {
+      tree: 30, rock: 40, bush: 12, iron_vein: 50, shrub: 10, fishing_spot: 15,
+      coal_vein: 45, gold_vein: 55, clay_pit: 14,
+    };
     const yieldByType = {
       tree: { item: 'wood', min: 3, max: 6 },
       rock: { item: 'stone', min: 2, max: 5 },
@@ -95,6 +105,9 @@ class Game {
       iron_vein: { item: 'iron_ore', min: 1, max: 3 },
       shrub: { item: 'fiber', min: 1, max: 3 },
       fishing_spot: { item: 'raw_fish', min: 1, max: 2 },
+      coal_vein: { item: 'coal', min: 2, max: 4 },
+      gold_vein: { item: 'gold_ore', min: 1, max: 2 },
+      clay_pit: { item: 'clay', min: 2, max: 4 },
     };
     this.resources.set(id, {
       id, type, x, y,
@@ -106,21 +119,52 @@ class Game {
   }
 
   spawnInitialMobs() {
-    for (let i = 0; i < 10; i++) this.spawnMob();
+    // A hand-picked initial population so the world doesn't start empty
+    // while waiting for the random spawn scheduler to fill it in.
+    const starting = { wolf: 6, rabbit: 8, deer: 6, boar: 5, bear: 2 };
+    for (const [type, count] of Object.entries(starting)) {
+      for (let i = 0; i < count; i++) this.spawnMob(type);
+    }
   }
 
-  spawnMob() {
+  pickMobType(night) {
+    const types = Object.keys(MOB_TYPES);
+    const weights = types.map((t) => {
+      const def = MOB_TYPES[t];
+      let w = def.rarityWeight ?? 1;
+      if (night && def.nightBias) w *= def.nightBias;
+      if (!night && def.behavior === 'flee') w *= 1.4; // grazing animals are more common by day
+      return w;
+    });
+    const total = weights.reduce((a, b) => a + b, 0);
+    let r = this.rng() * total;
+    for (let i = 0; i < types.length; i++) {
+      r -= weights[i];
+      if (r <= 0) return types[i];
+    }
+    return types[types.length - 1];
+  }
+
+  spawnMob(type) {
     if (this.mobs.size >= MAX_MOBS) return;
-    let x, y, tries = 0;
+    const mobType = type || this.pickMobType(this.isNight());
+    const def = MOB_TYPES[mobType];
+    if (!def) return;
+
+    let x, y, tries = 0, matched = false;
     do {
       x = this.rng() * this.world.size;
       y = this.rng() * this.world.size;
       tries++;
-    } while (!isWalkable(this.world, x, y) && tries < 50);
+      matched = isWalkable(this.world, x, y) &&
+        def.spawnBiomes.some((b) => TILE[b] === tileAt(this.world, x, y));
+    } while (!matched && tries < 60);
+    if (!matched) return;
+
     const id = 'm' + genId();
     this.mobs.set(id, {
-      id, type: 'wolf', x, y, hp: 30, maxHp: 30, damage: 8,
-      state: 'wander', targetPlayerId: null,
+      id, type: mobType, x, y, hp: def.hp, maxHp: def.hp, damage: def.damage,
+      state: 'wander', targetPlayerId: null, angryAt: null,
       wanderAngle: this.rng() * Math.PI * 2,
       lastAttack: 0, alive: true,
     });
@@ -144,6 +188,7 @@ class Game {
       inventory: { wood: 0, stone: 0, fiber: 2, berry: 0, meat_raw: 0, meat_cooked: 0 },
       equipped: null,
       armor: { head: null, chest: null, legs: null },
+      accessory: null,
       alive: true,
       lastAttack: 0,
       lastGather: 0,
@@ -210,10 +255,10 @@ class Game {
     let dmg = 5;
     let toolMatch = 'none';
     if (r.type === 'tree') {
-      if (tool && tool.tool === 'axe') { dmg = 8 + (tool.gatherBonus.wood || 0); toolMatch = tool.tier === 2 ? 'iron' : 'basic'; }
-    } else if (r.type === 'rock' || r.type === 'iron_vein') {
-      if (tool && tool.tool === 'pickaxe') { dmg = 8 + (tool.gatherBonus.stone || 0); toolMatch = tool.tier === 2 ? 'iron' : 'basic'; }
-    } else if (r.type === 'bush' || r.type === 'shrub') {
+      if (tool && tool.tool === 'axe') { dmg = 8 + (tool.gatherBonus.wood || 0); toolMatch = tool.tier >= 2 ? 'iron' : 'basic'; }
+    } else if (r.type === 'rock' || r.type === 'iron_vein' || r.type === 'coal_vein' || r.type === 'gold_vein') {
+      if (tool && tool.tool === 'pickaxe') { dmg = 8 + (tool.gatherBonus.stone || 0); toolMatch = tool.tier >= 2 ? 'iron' : 'basic'; }
+    } else if (r.type === 'bush' || r.type === 'shrub' || r.type === 'clay_pit') {
       dmg = r.hp; toolMatch = 'basic'; // one-shot harvest
     } else if (r.type === 'fishing_spot') {
       dmg = 10; toolMatch = 'basic';
@@ -224,7 +269,9 @@ class Game {
     if (r.hp <= 0) {
       r.alive = false;
       r.respawnAt = this.tick + RESOURCE_RESPAWN_TICKS;
-      const amount = r.yield.min + Math.floor(this.rng() * (r.yield.max - r.yield.min + 1));
+      const accessory = p.accessory && ITEMS[p.accessory];
+      const yieldBonus = (accessory && accessory.gatherYieldBonus) || 0;
+      const amount = r.yield.min + Math.floor(this.rng() * (r.yield.max - r.yield.min + 1)) + yieldBonus;
       const baseItem = r.yield.item;
       const tierable = ITEMS[baseItem] && ITEMS[baseItem].tierable;
       const quality = tierable ? rollGatherQuality(this.rng, toolMatch) : 'normal';
@@ -238,8 +285,10 @@ class Game {
   attack(socketId, targetType, targetId) {
     const p = this.players.get(socketId);
     if (!p || !p.alive) return null;
+    const weapon = p.equipped && ITEMS[p.equipped];
+    const cooldown = (weapon && weapon.attackCooldownMs) || ATTACK_COOLDOWN_MS;
     const now = Date.now();
-    if (now - p.lastAttack < ATTACK_COOLDOWN_MS) return null;
+    if (now - p.lastAttack < cooldown) return null;
 
     let target;
     if (targetType === 'mob') target = this.mobs.get(targetId);
@@ -250,7 +299,15 @@ class Game {
     if (dist > ATTACK_RANGE) return null;
     p.lastAttack = now;
 
-    const weapon = p.equipped && ITEMS[p.equipped];
+    // A neutral animal (boar) turns on whoever strikes it first.
+    if (targetType === 'mob') {
+      const mobDef = MOB_TYPES[target.type];
+      if (mobDef && mobDef.behavior === 'neutral' && !target.angryAt) {
+        target.angryAt = socketId;
+        target.state = 'chase';
+      }
+    }
+
     const rawDmg = weapon && weapon.damage ? weapon.damage : 4;
     const dmg = targetType === 'player' ? this.damagePlayer(target, rawDmg) : (target.hp -= rawDmg, rawDmg);
     const events = [{ type: 'attackHit', targetType, targetId, dmg }];
@@ -259,10 +316,8 @@ class Game {
       target.alive = false;
       if (targetType === 'mob') {
         p.kills++;
-        const meat = 2 + Math.floor(this.rng() * 3);
-        p.inventory.meat_raw = (p.inventory.meat_raw || 0) + meat;
-        if (target.type === 'wolf') {
-          p.inventory.wolf_hide = (p.inventory.wolf_hide || 0) + 1;
+        for (const drop of rollDrops(this.rng, target.type)) {
+          p.inventory[drop.item] = (p.inventory[drop.item] || 0) + drop.amount;
         }
         this.trackKill(p, target.type);
         events.push({ type: 'mobKilled', mobId: targetId, by: socketId });
@@ -298,10 +353,10 @@ class Game {
     p.x = x; p.y = y;
   }
 
-  craft(socketId, itemId, quality) {
+  craft(socketId, recipeId, quality) {
     const p = this.players.get(socketId);
     if (!p || !p.alive) return { ok: false, reason: 'dead' };
-    const recipe = RECIPES.find(r => r.result === itemId);
+    const recipe = RECIPES.find(r => r.id === recipeId);
     if (!recipe) return { ok: false, reason: 'unknown recipe' };
     if (recipe.requiresStructure && !p.nearStructures.includes(recipe.requiresStructure)) {
       return { ok: false, reason: `need a ${recipe.requiresStructure} nearby` };
@@ -312,6 +367,7 @@ class Game {
 
     // Quality only applies to results marked tierable; everything else
     // (structures, armor, cloth gear, fishing rod) always crafts "normal".
+    const itemId = recipe.result;
     const resultTierable = ITEMS[itemId] && ITEMS[itemId].tierable;
     const effectiveQuality = resultTierable && QUALITY_TIERS.includes(quality) ? quality : 'normal';
 
@@ -352,6 +408,16 @@ class Game {
     if (!(p.inventory[itemId] > 0)) return;
     const slot = def.armorSlot;
     p.armor[slot] = p.armor[slot] === itemId ? null : itemId;
+  }
+
+  equipAccessory(socketId, itemId) {
+    const p = this.players.get(socketId);
+    if (!p || !p.alive) return;
+    if (itemId === null) { p.accessory = null; return; }
+    const def = ITEMS[itemId];
+    if (!def || !def.accessorySlot) return;
+    if (!(p.inventory[itemId] > 0)) return;
+    p.accessory = p.accessory === itemId ? null : itemId;
   }
 
   eat(socketId, itemId) {
@@ -579,12 +645,13 @@ class Game {
     }
 
     // Mobs AI
-    const night = this.isNight();
-    if (night && this.mobs.size < MAX_MOBS && this.rng() < 0.02) this.spawnMob();
+    if (this.mobs.size < MAX_MOBS && this.rng() < MOB_SPAWN_CHECK_CHANCE) this.spawnMob();
 
     for (const m of this.mobs.values()) {
       if (!m.alive) continue;
-      // find nearest player
+      const def = MOB_TYPES[m.type];
+      if (!def) continue;
+
       let nearest = null, nearestDist = Infinity;
       for (const p of this.players.values()) {
         if (!p.alive) continue;
@@ -592,35 +659,55 @@ class Game {
         if (d < nearestDist) { nearestDist = d; nearest = p; }
       }
 
-      if (nearest && nearestDist < MOB_AGGRO_RANGE) {
-        m.state = 'chase';
-        m.targetPlayerId = nearest.id;
-        const dx = nearest.x - m.x, dy = nearest.y - m.y;
-        const len = Math.hypot(dx, dy) || 1;
-        if (nearestDist > MOB_ATTACK_RANGE) {
-          const speed = 2.6;
+      if (def.behavior === 'flee') {
+        if (nearest && nearestDist < def.aggroRange) {
+          m.state = 'flee';
+          const dx = m.x - nearest.x, dy = m.y - nearest.y;
+          const len = Math.hypot(dx, dy) || 1;
+          const speed = def.fleeSpeed || def.wanderSpeed;
           const nx = m.x + (dx / len) * speed * dt;
           const ny = m.y + (dy / len) * speed * dt;
+          if (isWalkable(this.world, nx, ny)) { m.x = nx; m.y = ny; }
+          else m.wanderAngle = Math.atan2(dy, dx) + Math.PI;
+        } else {
+          this.wander(m, def, dt);
+        }
+        continue;
+      }
+
+      // aggressive: always hunts the nearest player. neutral: only hunts
+      // whoever last attacked it (angryAt), and stops once that target dies.
+      let huntTarget = null;
+      if (def.behavior === 'aggressive' && nearest && nearestDist < def.aggroRange) {
+        huntTarget = nearest;
+      } else if (def.behavior === 'neutral' && m.angryAt) {
+        const angryPlayer = this.players.get(m.angryAt);
+        huntTarget = angryPlayer && angryPlayer.alive ? angryPlayer : null;
+        if (!huntTarget) m.angryAt = null;
+      }
+
+      if (huntTarget) {
+        m.state = 'chase';
+        m.targetPlayerId = huntTarget.id;
+        const dx = huntTarget.x - m.x, dy = huntTarget.y - m.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        if (dist > MOB_ATTACK_RANGE) {
+          const nx = m.x + (dx / dist) * def.chaseSpeed * dt;
+          const ny = m.y + (dy / dist) * def.chaseSpeed * dt;
           if (isWalkable(this.world, nx, ny)) { m.x = nx; m.y = ny; }
         } else {
           const now = Date.now();
           if (now - m.lastAttack > MOB_ATTACK_COOLDOWN_MS) {
             m.lastAttack = now;
-            this.damagePlayer(nearest, m.damage);
-            if (nearest.hp <= 0) {
-              nearest.alive = false;
-              nearest.deaths++;
+            this.damagePlayer(huntTarget, m.damage);
+            if (huntTarget.hp <= 0) {
+              huntTarget.alive = false;
+              huntTarget.deaths++;
             }
           }
         }
       } else {
-        m.state = 'wander';
-        m.wanderAngle += (this.rng() - 0.5) * 0.6;
-        const speed = 0.8;
-        const nx = m.x + Math.cos(m.wanderAngle) * speed * dt;
-        const ny = m.y + Math.sin(m.wanderAngle) * speed * dt;
-        if (isWalkable(this.world, nx, ny)) { m.x = nx; m.y = ny; }
-        else m.wanderAngle += Math.PI;
+        this.wander(m, def, dt);
       }
     }
     // cleanup dead mobs after a delay (respawn elsewhere)
@@ -633,6 +720,16 @@ class Game {
         }
       }
     }
+  }
+
+  wander(m, def, dt) {
+    m.state = 'wander';
+    m.wanderAngle += (this.rng() - 0.5) * 0.6;
+    const speed = def.wanderSpeed;
+    const nx = m.x + Math.cos(m.wanderAngle) * speed * dt;
+    const ny = m.y + Math.sin(m.wanderAngle) * speed * dt;
+    if (isWalkable(this.world, nx, ny)) { m.x = nx; m.y = ny; }
+    else m.wanderAngle += Math.PI;
   }
 
   snapshot() {
@@ -667,7 +764,7 @@ class Game {
       activeQuests[qid] = this.describeQuest(quest, this.questProgressFor(p, quest));
     }
     return {
-      inventory: p.inventory, equipped: p.equipped, armor: p.armor,
+      inventory: p.inventory, equipped: p.equipped, armor: p.armor, accessory: p.accessory,
       hp: p.hp, maxHp: p.maxHp, hunger: p.hunger, maxHunger: p.maxHunger, alive: p.alive,
       nearStructures: p.nearStructures,
       completedQuests: Array.from(p.completedQuests),
