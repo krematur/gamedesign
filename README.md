@@ -177,18 +177,24 @@ The renderer is a real (if lightweight) pipeline, not just `renderer.render()`:
 - **Sky**: a gradient sky dome (custom vertex/fragment shader, horizon →
   zenith) instead of a flat background color, with its colors driven by
   the day/night cycle alongside the fog
-- **Terrain**: real tiled PBR textures (diffuse + normal + roughness) per
-  land biome (`public/js/terrainTextures.js`), on top of the same
-  deterministic per-vertex height/brightness jitter as before. Land biomes
+- **Terrain**: real tiled PBR textures (diffuse + roughness) per land biome
+  (`public/js/terrainTextures.js`), on top of the same deterministic
+  per-vertex height/brightness jitter as before. Land biomes
   (grass/forest/sand/stone) share a single mesh with a custom shader
   (`MeshStandardMaterial.onBeforeCompile`) that blends between each biome's
-  diffuse/normal/roughness maps per-vertex, using a `biomeWeight` attribute
+  diffuse/roughness maps per-vertex, using a `biomeWeight` attribute
   derived from the tiles around each vertex corner — this turns hard
   per-tile biome edges into a smooth gradient instead of visible texture
-  "blocks". Water keeps its own separate untextured mesh. Any land biome
-  without a texture configured falls back to a neutral sampler so the blend
-  still works, so textures can be (and were) added one biome at a time
-  without ever breaking the others
+  "blocks". Normal maps are intentionally not blended in: perturbing the
+  surface normal per-fragment with a hand-built tangent frame on this
+  large, raw-world-scale-UV mesh produced degenerate normals that killed
+  direct sun/hemi lighting (only flat ambient light got through, so the
+  ground stayed dark no matter how bright the lights were) — the smooth
+  per-vertex geometric normal lights correctly and still looks good with
+  the diffuse/roughness blend. Water keeps its own separate untextured
+  mesh. Any land biome without a texture configured falls back to a
+  neutral sampler so the blend still works, so textures can be (and were)
+  added one biome at a time without ever breaking the others
 - **Particles**: campfires and torches have a small looping ember system
   (`THREE.Points`, additive blending) drifting up out of the flame
 - **Equipped gear on the character**: every player's held tool/weapon and

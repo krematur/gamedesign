@@ -312,10 +312,11 @@ export function setWorld(world) {
   scene.add(waterMesh);
 }
 
-// Loads every land biome's diffuse/normal/roughness maps (whichever are
+// Loads every land biome's diffuse/roughness maps (whichever are
 // configured in TERRAIN_TEXTURES) and, once ready, swaps the land mesh's
 // material for one that blends between them per-vertex using the
 // `biomeWeight` attribute — smooth transitions instead of hard tile edges.
+// (Normal maps are intentionally not used here — see the comment below.)
 // Async and best-effort: the mesh already has the flat vertex-color
 // fallback material, so slow/missing textures just mean it stays flat.
 async function applyBlendedTerrainTextures(mesh) {
@@ -334,15 +335,13 @@ async function applyBlendedTerrainTextures(mesh) {
     loaded = await Promise.all(configured.map(async (biome) => {
       const config = TERRAIN_TEXTURES[biome];
       const repeat = config.repeat ?? 0.35;
-      const [diffuse, normal, roughness] = await Promise.all([
+      const [diffuse, roughness] = await Promise.all([
         loadTexture(config.diffuse),
-        config.normal ? loadTexture(config.normal) : Promise.resolve(null),
         config.roughness ? loadTexture(config.roughness) : Promise.resolve(null),
       ]);
       configureTexture(diffuse, repeat, true);
-      if (normal) configureTexture(normal, repeat, false);
       if (roughness) configureTexture(roughness, repeat, false);
-      return { biome, diffuse, normal, roughness };
+      return { biome, diffuse, roughness };
     }));
   } catch (err) {
     return; // one or more textures failed — keep the flat fallback material.
@@ -352,24 +351,29 @@ async function applyBlendedTerrainTextures(mesh) {
   // pack entry yet, so the shader's fixed 4-texture blend always has
   // something valid to sample (its weight there may still be > 0).
   const whiteTex = solidColorTexture('#ffffff');
-  const flatNormalTex = solidColorTexture('#8080ff');
   const midRoughTex = solidColorTexture('#808080');
   const byBiome = new Map(loaded.map((l) => [l.biome, l]));
   const sample = (biome, which, fallback) => byBiome.get(biome)?.[which] || fallback;
 
+  // Normal-map blending is deliberately skipped: perturbing the surface
+  // normal per-fragment via a hand-rolled tangent frame on this large,
+  // raw-world-scale-UV mesh produced degenerate normals (direct sun/hemi
+  // light contributed ~nothing, leaving only flat ambient light — the
+  // ground stayed dark no matter how bright the lights were). The smooth
+  // per-vertex geometric normal from computeVertexNormals() lights
+  // correctly and still looks good with the diffuse/roughness blend.
   const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
-  mat.defines = { USE_UV: '', USE_NORMALMAP_TANGENTSPACE: '' };
+  mat.defines = { USE_UV: '' };
   mat.onBeforeCompile = (shader) => {
     for (const biome of LAND_BIOMES) {
       const cap = biome[0].toUpperCase() + biome.slice(1);
       shader.uniforms[`t${cap}Diffuse`] = { value: sample(biome, 'diffuse', whiteTex) };
-      shader.uniforms[`t${cap}Normal`] = { value: sample(biome, 'normal', flatNormalTex) };
       shader.uniforms[`t${cap}Roughness`] = { value: sample(biome, 'roughness', midRoughTex) };
       shader.uniforms[`u${cap}Repeat`] = { value: TERRAIN_TEXTURES[biome]?.repeat ?? 0.35 };
     }
     const biomeDecls = LAND_BIOMES.map((b) => {
       const cap = b[0].toUpperCase() + b.slice(1);
-      return `uniform sampler2D t${cap}Diffuse;\nuniform sampler2D t${cap}Normal;\nuniform sampler2D t${cap}Roughness;\nuniform float u${cap}Repeat;`;
+      return `uniform sampler2D t${cap}Diffuse;\nuniform sampler2D t${cap}Roughness;\nuniform float u${cap}Repeat;`;
     }).join('\n');
     const weightNorm = 'vec4 bw = vBiomeWeight / max(vBiomeWeight.x + vBiomeWeight.y + vBiomeWeight.z + vBiomeWeight.w, 0.0001);';
 
@@ -389,14 +393,7 @@ async function applyBlendedTerrainTextures(mesh) {
     texture2D( tGrassRoughness, vUv * uGrassRepeat ).g * bw.x +
     texture2D( tForestRoughness, vUv * uForestRepeat ).g * bw.y +
     texture2D( tSandRoughness, vUv * uSandRepeat ).g * bw.z +
-    texture2D( tStoneRoughness, vUv * uStoneRepeat ).g * bw.w;`)
-      .replace('#include <normal_fragment_maps>', `{\n\t${weightNorm}\n\tvec3 mapN =
-    (texture2D( tGrassNormal, vUv * uGrassRepeat ).xyz * 2.0 - 1.0) * bw.x +
-    (texture2D( tForestNormal, vUv * uForestRepeat ).xyz * 2.0 - 1.0) * bw.y +
-    (texture2D( tSandNormal, vUv * uSandRepeat ).xyz * 2.0 - 1.0) * bw.z +
-    (texture2D( tStoneNormal, vUv * uStoneRepeat ).xyz * 2.0 - 1.0) * bw.w;
-	mapN = normalize( mapN );
-	normal = normalize( tbn * mapN );\n}`);
+    texture2D( tStoneRoughness, vUv * uStoneRepeat ).g * bw.w;`);
   };
   mesh.material.dispose();
   mesh.material = mat;
