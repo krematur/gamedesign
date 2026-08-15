@@ -4,6 +4,17 @@ A browser-based multiplayer survival RPG rendered in full 3D. Node.js +
 Socket.IO server that runs an authoritative simulation of a shared world;
 players connect through a Three.js/WebGL client with a third-person camera.
 
+**An Unreal Engine 5 port is in progress** in `unreal/Wildholm/` — moving
+off the browser/WebGL stack to reach real PBR materials, Lumen lighting,
+and Nanite geometry, since a stylized low-poly Three.js scene has a hard
+visual ceiling. See `unreal/Wildholm/README.md` for status (it's a
+hand-authored C++ scaffold, not yet opened/compiled — this environment
+has no Unreal Engine install, no GUI, and no network access to fetch one)
+and `unreal/Wildholm/DESIGN_PORT.md` for the plan to bring the existing
+game design (items, quests, mobs, resource fields, quality tiers, world
+generation) across. The sections below describe the browser version,
+which still exists and works.
+
 ## Features
 
 - Real 3D world (Three.js/WebGL): a smooth heightmapped terrain mesh (water
