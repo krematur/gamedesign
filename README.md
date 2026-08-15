@@ -14,12 +14,13 @@ and `unreal/Wildholm/DESIGN_PORT.md` for the plan to bring the existing
 game design (items, quests, mobs, resource fields, quality tiers, world
 generation) across.
 
-**There's also a verified native rendering prototype** in
-`native/wildholm-native/` (Bevy/Rust) — unlike the Unreal scaffold, this
-one actually compiles and runs in this environment (real PBR materials,
-real shadows, screenshot-tested), proving out the "move to a native PBR
-pipeline" direction concretely while Unreal itself stays untestable here.
-It's a rendering proof of concept, not a game-logic port. See
+**There's also a verified native prototype** in `native/wildholm-native/`
+(Bevy/Rust) — unlike the Unreal scaffold, this one actually compiles and
+runs in this environment: real PBR terrain generated from a Rust port of
+`server/world.js`'s island algorithm, the village from `render3d.js`
+ported over, and a controllable third-person character, all screenshot-
+verified. It's a world-rendering + movement prototype, not a full
+game-logic port (no networking/inventory/quests/mobs yet). See
 `native/wildholm-native/README.md`.
 
 The sections below describe the browser version, which still exists and

@@ -1,21 +1,68 @@
 # Wildholm — native engine prototype (Bevy)
 
-A real, compiled, verified proof of concept that Wildholm's visuals can
-improve dramatically by moving off the browser/WebGL stack — this one
+A real, compiled, verified native build of Wildholm's world — this one
 actually builds and runs in this environment, unlike the Unreal Engine 5
 scaffold in `../../unreal/` (no engine binary, no GUI, no network access
 to install it there; see `../../unreal/Wildholm/README.md`).
 
 ![Proof screenshot](docs/proof_screenshot.png)
 
-That screenshot is a real render: a PBR-lit ground plane using the exact
-same grass diffuse/normal/roughness textures the browser version's
-terrain uses (`../../public/assets/textures/terrain/`), plus a couple of
-simple props, a directional light with real-time shadows, and ambient
-light — compiled and rendered headlessly in this sandbox and captured to
-disk. Compare it to the browser version's flat vertex-colored terrain:
-this is what "real PBR" actually looks like once a genuine lighting model
-and normal mapping are in play, not just tinted flat shading.
+That screenshot is a real render, not a mockup: the actual island
+generation algorithm ported from `server/world.js`, a village (ported
+from `buildVillage()`/`buildHut()`/`buildKeep()` in
+`public/js/render3d.js`) sitting on it, and a controllable player
+character with a following camera — all lit with real-time shadows and
+PBR materials, compiled and run headlessly in this sandbox, captured to
+disk, and inspected.
+
+## What's real vs. what's a stub
+
+**Real and verified (compiles, runs, screenshot-checked):**
+
+- `src/world.rs` — the island generator, ported near line-for-line from
+  `server/world.js`: radial falloff warped by large-scale noise for the
+  coastline, an independent mountain noise field (so highlands don't
+  always crown the exact map center), coastal cliff patches, and the
+  5-trail path-carving algorithm. Same xorshift RNG as the JS version.
+- `src/terrain.rs` — builds an actual heightmapped, vertex-colored Bevy
+  `Mesh` from the world data (per-vertex height averaging + jitter, same
+  approach as `setWorld()` in `render3d.js`), split into land/water index
+  buffers sharing one position buffer so they stitch with no seams.
+- `src/village.rs` — the keep + 5-hut layout, ported from
+  `render3d.js`'s `buildVillage()`.
+- `src/player.rs` — a capsule character with WASD movement and a
+  lerped third-person follow camera (matching the `CAMERA_BACK`/
+  `CAMERA_HEIGHT`/`CAMERA_LERP` constants in `render3d.js`). The
+  movement/camera *systems* are real, compiled code; headless testing
+  here can't press keys, so only the initial placement (spawn position,
+  camera framing) has actually been visually verified — the input
+  handling itself hasn't been interactively exercised.
+- `main.rs` ties it together: generates the world, builds/spawns the
+  terrain meshes, finds a walkable spawn point, spawns the player just
+  off from the village so they don't start inside the keep, lights the
+  scene, and — for headless verification — screenshots and exits after
+  a few frames.
+
+**Known limitation:** the terrain currently uses vertex colors only, no
+textures. At this grid resolution (80×80 tiles) that reads as a soft
+color gradient rather than crisp biome detail — visible in the proof
+screenshot as a blurry rather than sharp coastline. The browser version
+solved this with a per-vertex texture-blend shader
+(`applyBlendedTerrainTextures` in `render3d.js`); porting that to Bevy
+means writing a custom WGSL material (or a `MaterialExtension` on
+`StandardMaterial`) that samples and blends multiple biome textures by a
+per-vertex weight, the same idea, different shader language. That's the
+natural next visual improvement.
+
+**Still a stub / not started:** everything gameplay-related — no
+networking, no inventory/crafting/quests, no mobs, no resource nodes/
+fields, no day-night cycle. This is a world-rendering + character-
+movement prototype, not a game yet. See
+`../../unreal/Wildholm/DESIGN_PORT.md` for the system-by-system porting
+plan (item/quest/mob data, resource fields, day/night) — it was written
+for the Unreal port but the *design* mapping applies here too; only the
+target APIs differ (Bevy ECS + its own networking crates instead of
+Unreal's built-in replication).
 
 ## Why Bevy and not Unreal
 
@@ -33,7 +80,8 @@ This is **not** a replacement for the Unreal Engine port — Unreal has a
 substantially higher visual ceiling (Lumen, Nanite) and was the engine
 explicitly chosen for that reason. This is a working reference/prototype
 that proves out the "move to a native PBR pipeline" direction concretely,
-runnable and testable in this sandbox for as long as that's useful.
+and one that can keep growing directly in this environment for as long as
+that's useful.
 
 ## Running it
 
@@ -68,21 +116,8 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan \
   xvfb-run -a -s "-screen 0 1280x800x24" ./target/debug/wildholm-native
 ```
 
-It runs for ~75 frames, saves `screenshot.png` next to wherever you ran it
-from, and exits. On a machine with a real GPU you can drop the `xvfb-run`
-wrapper and the env vars and just run the binary directly for a live
-interactive window instead.
-
-## What's actually here vs. what's a stub
-
-- Real: the scene setup in `src/main.rs` (PBR materials + textures,
-  lighting, shadows, camera), the screenshot-and-exit harness, the whole
-  build/run pipeline above.
-- Stub: everything gameplay-related — this is a rendering proof of
-  concept, not a port of the game logic. There's no networking, no
-  character controller, no inventory, none of what's in
-  `../../server/`. If this direction is worth pursuing further, next
-  steps would look like `../../unreal/Wildholm/DESIGN_PORT.md`'s mapping
-  (item/quest/mob data, world generation, multiplayer replication — Bevy
-  has its own ECS-native replication crates rather than Unreal's built-in
-  system) adapted to Bevy's APIs instead.
+It runs for ~30 frames, saves `screenshot.png` next to wherever you ran
+it from, and exits. On a machine with a real GPU, drop the `xvfb-run`
+wrapper and the env vars and run the binary directly instead — you'll
+get a live interactive window and can actually test WASD movement and
+the follow camera, which headless testing here can't exercise.
