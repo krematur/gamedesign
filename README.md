@@ -19,7 +19,14 @@ players connect through a Three.js/WebGL client with a third-person camera.
   campfires/torches
 - Day/night cycle drives real lighting — sun/hemisphere light intensity, sky
   gradient, and fog all shift between day and a darker, foggier night
-- Procedurally generated island world (grass, forest, stone, sand, water biomes)
+- Procedurally generated island world (`server/world.js`): a single
+  landmass surrounded by ocean, shaped from a radial falloff warped by
+  large-scale noise (irregular bays/peninsulas instead of a perfect
+  circle), with a sand coastline ring, grass/forest interior, and
+  mountain ranges placed by an independent noise field so they cluster
+  off to one side of the island rather than always crowning the exact
+  center — that keeps the middle of the map, where players and NPCs
+  spawn, on walkable lowland
 - Real-time multiplayer via WebSockets — every player sees the same shared world
 - Gathering: chop trees for wood, mine rocks/iron/coal/gold veins, dig clay
   pits, pick berry bushes for food, harvest shrubs for fiber, and fish
@@ -123,7 +130,10 @@ Environment variables:
 
 ## Architecture
 
-- `server/world.js` — deterministic procedural world generation (tile grid)
+- `server/world.js` — deterministic procedural world generation (tile
+  grid): an island silhouette from a warped radial falloff, plus an
+  independent noise field for mountain placement so highlands don't
+  always sit at the exact map center
 - `server/quality.js` — Crude/Normal/Fine tier definitions, item id helpers
   (`wood` ↔ `wood_fine`), and the gather-quality roll (dominated by resource
   field bias, nudged a little by tool tier)
