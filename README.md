@@ -152,9 +152,13 @@ Environment variables:
   quest tracker, chat); delegates all 3D rendering to `render3d.js`
 - `public/js/assets.js` — the real-art manifest (see "Adding real character
   art" below); empty by default
+- `public/js/terrainTextures.js` — the terrain texture manifest (diffuse/
+  normal/roughness per biome); biomes with no entry keep the flat
+  vertex-colored fallback
+- `public/assets/textures/terrain/` — the actual terrain texture files
 - `public/vendor/` — vendored Three.js build, `GLTFLoader`, and the
-  post-processing pipeline (`EffectComposer`, bloom, FXAA, tone mapping),
-  all served locally with no CDN dependency
+  post-processing pipeline (`EffectComposer`, SSAO, bloom, FXAA, tone
+  mapping), all served locally with no CDN dependency
 
 ### Rendering pipeline
 
@@ -173,9 +177,14 @@ The renderer is a real (if lightweight) pipeline, not just `renderer.render()`:
 - **Sky**: a gradient sky dome (custom vertex/fragment shader, horizon →
   zenith) instead of a flat background color, with its colors driven by
   the day/night cycle alongside the fog
-- **Terrain variation**: a cheap deterministic hash jitters each terrain
-  vertex's height and brightness slightly, so biomes read as natural ground
-  rather than flat, uniform color blocks
+- **Terrain**: real tiled PBR textures (diffuse + normal + roughness) per
+  land biome (`public/js/terrainTextures.js`), on top of the same
+  deterministic per-vertex height/brightness jitter as before. The ground
+  is split into one mesh per biome sharing identical vertex positions at
+  their shared edges, so textured and untextured biomes sit flush with no
+  seams — any biome without a texture configured just keeps the flat
+  vertex-colored look, so textures can be (and were) added one biome at a
+  time without ever breaking the others
 - **Particles**: campfires and torches have a small looping ember system
   (`THREE.Points`, additive blending) drifting up out of the flame
 - **Equipped gear on the character**: every player's held tool/weapon and
