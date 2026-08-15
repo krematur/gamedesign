@@ -6,6 +6,7 @@ import * as THREE from '../vendor/three.module.js';
 import { GLTFLoader } from '../vendor/loaders/GLTFLoader.js';
 import { EffectComposer } from '../vendor/postprocessing/EffectComposer.js';
 import { RenderPass } from '../vendor/postprocessing/RenderPass.js';
+import { SSAOPass } from '../vendor/postprocessing/SSAOPass.js';
 import { UnrealBloomPass } from '../vendor/postprocessing/UnrealBloomPass.js';
 import { FXAAPass } from '../vendor/postprocessing/FXAAPass.js';
 import { OutputPass } from '../vendor/postprocessing/OutputPass.js';
@@ -26,7 +27,7 @@ const FIELD_COLORS = {
   coal: '#7a5ccf', gold_ore: '#f5c542', clay: '#c2703f', raw_fish: '#3fb8d9',
 };
 
-let renderer, scene, camera, composer, bloomPass, fxaaPass;
+let renderer, scene, camera, composer, ssaoPass, bloomPass, fxaaPass;
 let groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let raycaster = new THREE.Raycaster();
 let worldSize = 80;
@@ -176,12 +177,21 @@ export function init(canvasEl) {
   window.addEventListener('resize', resize);
 }
 
-// Post-processing chain: render -> bloom (fire/emissive glow) -> FXAA
+// Post-processing chain: render -> SSAO (contact shadowing in creases/
+// corners flat lighting misses) -> bloom (fire/emissive glow) -> FXAA
 // (post-process antialiasing, since MSAA doesn't apply through a composer)
 // -> output (ACES tone mapping + correct color space on the final blit).
 function setupComposer() {
   composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
+
+  ssaoPass = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+  ssaoPass.kernelRadius = 0.5;
+  ssaoPass.minDistance = 0.0015;
+  ssaoPass.maxDistance = 0.08;
+  ssaoPass.output = SSAOPass.OUTPUT.Default;
+  composer.addPass(ssaoPass);
+
   bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.5, 0.55, 0.86);
   composer.addPass(bloomPass);
   fxaaPass = new FXAAPass();
@@ -457,6 +467,110 @@ function buildPerson(bodyColor, headColor) {
   return g;
 }
 
+// ---------- Equipment visuals (held weapons, worn armor) ----------
+// Material tier reads straight off the item id prefix — the same
+// wood/stone -> iron -> steel progression used throughout crafting.
+function gearTierMaterials(itemId) {
+  if (itemId.startsWith('steel_')) {
+    return {
+      main: new THREE.MeshStandardMaterial({ color: '#7d93ab', roughness: 0.3, metalness: 0.85 }),
+      grip: new THREE.MeshStandardMaterial({ color: '#2a2a2a', roughness: 0.7 }),
+    };
+  }
+  if (itemId.startsWith('iron_')) {
+    return {
+      main: new THREE.MeshStandardMaterial({ color: '#9a9a9a', roughness: 0.35, metalness: 0.8 }),
+      grip: new THREE.MeshStandardMaterial({ color: '#5a3a20', roughness: 0.8 }),
+    };
+  }
+  if (itemId === 'tusk_dagger') {
+    return {
+      main: new THREE.MeshStandardMaterial({ color: '#f2ecd8', roughness: 0.4 }),
+      grip: new THREE.MeshStandardMaterial({ color: '#6b4a2c', roughness: 0.8 }),
+    };
+  }
+  if (itemId === 'claw_gauntlets') {
+    return {
+      main: new THREE.MeshStandardMaterial({ color: '#e8e0c8', roughness: 0.4 }),
+      grip: new THREE.MeshStandardMaterial({ color: '#3a2a1c', roughness: 0.85 }),
+    };
+  }
+  return { // stone/wood tier default
+    main: new THREE.MeshStandardMaterial({ color: '#8a8a84', roughness: 0.8, flatShading: true }),
+    grip: new THREE.MeshStandardMaterial({ color: '#6b4a2c', roughness: 0.85 }),
+  };
+}
+
+function buildHeldWeapon(baseItem) {
+  const mat = gearTierMaterials(baseItem);
+  const g = new THREE.Group();
+
+  if (baseItem === 'axe' || baseItem === 'iron_axe' || baseItem === 'steel_axe') {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.48, 5), mat.grip);
+    const blade = new THREE.Mesh(new THREE.ConeGeometry(0.1, 0.18, 4), mat.main);
+    blade.rotation.z = Math.PI / 2;
+    blade.position.set(0, 0.22, 0.02);
+    g.add(handle, blade);
+  } else if (baseItem === 'pickaxe' || baseItem === 'iron_pickaxe' || baseItem === 'steel_pickaxe') {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.48, 5), mat.grip);
+    const head = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.09, 0.28, 4), mat.main);
+    head.rotation.z = Math.PI / 2;
+    head.position.y = 0.22;
+    g.add(handle, head);
+  } else if (baseItem === 'fishing_rod') {
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.025, 0.9, 5), mat.grip);
+    rod.position.y = 0.2;
+    g.add(rod);
+  } else if (baseItem === 'spear') {
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.8, 5), mat.grip);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 4), mat.main);
+    tip.position.y = 0.48;
+    g.add(handle, tip);
+  } else if (baseItem === 'claw_gauntlets') {
+    for (const side of [-1, 1]) {
+      const claw = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.13, 3), mat.main);
+      claw.position.set(side * 0.035, 0.02, 0.08);
+      claw.rotation.x = Math.PI / 2.3;
+      g.add(claw);
+    }
+  } else if (baseItem === 'iron_sword' || baseItem === 'steel_sword' || baseItem === 'tusk_dagger') {
+    const long = baseItem.endsWith('sword');
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.045, long ? 0.46 : 0.24, 0.012), mat.main);
+    blade.position.y = long ? 0.28 : 0.15;
+    const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.14, 5), mat.grip);
+    g.add(blade, grip);
+  } else {
+    return null;
+  }
+
+  g.position.set(0.3, 0.58, 0.14);
+  g.rotation.z = -0.35;
+  return g;
+}
+
+function buildArmorPiece(slot, itemId) {
+  let color = '#c9b896', metal = false; // cloth default
+  if (itemId.startsWith('leather_')) color = '#7a5230';
+  else if (itemId.startsWith('heavy_hide_')) color = '#3a2a1c';
+  else if (itemId.startsWith('iron_')) { color = '#9a9a9a'; metal = true; }
+  else if (itemId.startsWith('steel_')) { color = '#7d93ab'; metal = true; }
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: metal ? 0.35 : 0.85, metalness: metal ? 0.75 : 0.05, flatShading: true });
+
+  if (slot === 'head') {
+    const helm = new THREE.Mesh(new THREE.SphereGeometry(0.26, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.58), mat);
+    helm.position.y = 1.07;
+    return helm;
+  }
+  if (slot === 'chest') {
+    const vest = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.3, 0.42, 8), mat);
+    vest.position.y = 0.6;
+    return vest;
+  }
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.28, 0.16, 8), mat);
+  band.position.y = 0.28;
+  return band;
+}
+
 // Quadruped builder shared by all animal mobs — a body box + head + four
 // stub legs, parameterized so each species reads as visually distinct.
 function buildQuadruped({ bodyColor, headColor, bodyScale = 1, headScale = 1, earType = 'round', tusks = false }) {
@@ -608,6 +722,45 @@ function upsert(id, buildFn, x, y, scaleFn) {
   return obj;
 }
 
+// Rebuilds a player's held-weapon/worn-armor meshes only when their
+// equipped loadout actually changed (equip state is compared by a cheap
+// string key, not deep-diffed every tick — the snapshot arrives ~6.6x/sec
+// and rebuilding a handful of primitive meshes each time would be wasteful
+// for something that changes maybe once every few seconds).
+function updateEquipment(obj, p) {
+  const equipKey = p.equipped || '';
+  if (obj.userData.equipKey !== equipKey) {
+    obj.userData.equipKey = equipKey;
+    if (obj.userData.weaponMesh) { obj.remove(obj.userData.weaponMesh); obj.userData.weaponMesh = null; }
+    if (equipKey) {
+      const info = getItemInfo(equipKey);
+      const mesh = buildHeldWeapon(info.baseItem);
+      if (mesh) {
+        enableShadows(mesh);
+        obj.add(mesh);
+        obj.userData.weaponMesh = mesh;
+      }
+    }
+  }
+
+  const armor = p.armor || {};
+  const armorKey = `${armor.head || ''}|${armor.chest || ''}|${armor.legs || ''}`;
+  if (obj.userData.armorKey !== armorKey) {
+    obj.userData.armorKey = armorKey;
+    for (const slot of ['head', 'chest', 'legs']) {
+      const key = 'armorMesh_' + slot;
+      if (obj.userData[key]) { obj.remove(obj.userData[key]); obj.userData[key] = null; }
+      const itemId = armor[slot];
+      if (itemId) {
+        const mesh = buildArmorPiece(slot, itemId);
+        enableShadows(mesh);
+        obj.add(mesh);
+        obj.userData[key] = mesh;
+      }
+    }
+  }
+}
+
 export function syncState(state, myId) {
   const seen = new Set();
 
@@ -664,6 +817,7 @@ export function syncState(state, myId) {
       obj.add(sprite);
       nameSprites.set('p:' + p.id, sprite);
     }
+    if (!obj.userData.isBillboard) updateEquipment(obj, p);
   }
 
   for (const [id, obj] of entityMeshes) {

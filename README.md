@@ -164,10 +164,12 @@ The renderer is a real (if lightweight) pipeline, not just `renderer.render()`:
   shadow-camera frustum is a small box that follows the player each frame
   instead of trying to cover the whole 80x80 map — that keeps the shadow
   map's resolution sharp near the player, who's the only one looking at it
-- **Post-processing** (`EffectComposer`): render → `UnrealBloomPass` (glow
-  on fire and other emissive surfaces) → `FXAAPass` (antialiasing, since a
-  composer bypasses the browser's native MSAA) → `OutputPass` (ACES filmic
-  tone mapping + correct color space on the final image)
+- **Post-processing** (`EffectComposer`): render → `SSAOPass` (ambient
+  occlusion — soft contact shadowing in creases and corners that direct
+  lighting alone misses) → `UnrealBloomPass` (glow on fire and other
+  emissive surfaces) → `FXAAPass` (antialiasing, since a composer bypasses
+  the browser's native MSAA) → `OutputPass` (ACES filmic tone mapping +
+  correct color space on the final image)
 - **Sky**: a gradient sky dome (custom vertex/fragment shader, horizon →
   zenith) instead of a flat background color, with its colors driven by
   the day/night cycle alongside the fog
@@ -176,6 +178,14 @@ The renderer is a real (if lightweight) pipeline, not just `renderer.render()`:
   rather than flat, uniform color blocks
 - **Particles**: campfires and torches have a small looping ember system
   (`THREE.Points`, additive blending) drifting up out of the flame
+- **Equipped gear on the character**: every player's held tool/weapon and
+  worn armor render on their 3D model, for every player in the world, not
+  just yourself — a low-poly mesh keyed off the equipped item (axe,
+  pickaxe, spear, sword, dagger, gauntlets, or fishing rod get distinct
+  shapes) colored by material tier (wood/stone → iron → steel), plus
+  helmet/vest/leg-band overlays per armor slot colored by its material
+  (cloth/leather/heavy hide/iron/steel). Meshes are only rebuilt when a
+  player's loadout actually changes, not every network tick
 
 This gets Wildholm to a polished stylized/low-poly look. It does not and
 cannot make it photorealistic — that gap is almost entirely about art
@@ -233,7 +243,6 @@ projected from world space via the Three.js camera.
 - Resource field quality attributes beyond a single richness score (SWG-style
   multi-stat resources — conductivity, malleability, etc. — feeding into
   which stat a crafted item favors)
-- Deeper rendering: ambient occlusion (SSAO), water surface normal
-  animation/reflections, GPU instancing for large forests, visible
-  equipped weapons/armor on character models, higher-poly hand-authored
-  meshes for the hero entities (player, key NPCs)
+- Deeper rendering: water surface normal animation/reflections, GPU
+  instancing for large forests, higher-poly hand-authored meshes for the
+  hero entities (player, key NPCs)
