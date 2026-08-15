@@ -30,7 +30,10 @@ players connect through a Three.js/WebGL client with a third-person camera.
   mountain ranges placed by an independent noise field so they cluster
   off to one side of the island rather than always crowning the exact
   center — that keeps the middle of the map, where players and NPCs
-  spawn, on walkable lowland
+  spawn, on walkable lowland. A handful of winding dirt paths (also
+  carved server-side, `carvePaths`) radiate from the village out toward
+  the coast, rendered as a dirt-brown vertex-color tint over whatever
+  biome texture is already there rather than a distinct tile type
 - Real-time multiplayer via WebSockets — every player sees the same shared world
 - Gathering: chop trees for wood, mine rocks/iron/coal/gold veins, dig clay
   pits, pick berry bushes for food, harvest shrubs for fiber, and fish

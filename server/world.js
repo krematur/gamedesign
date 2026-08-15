@@ -118,7 +118,68 @@ function generateWorld(seed = 1337) {
     }
   }
 
-  return { size: WORLD_SIZE, tiles };
+  const paths = carvePaths(tiles, rng);
+
+  return { size: WORLD_SIZE, tiles, paths };
+}
+
+// Winding dirt paths radiating out from the village (map center — the same
+// point players/NPCs spawn at) toward several points near the coastline, so
+// the settlement reads as connected to the island instead of floating in
+// open grass. Purely a visual overlay: a parallel boolean array, not a tile
+// type, so nothing that reasons about TILE.* values needs to change.
+function carvePaths(tiles, rng) {
+  const paths = new Uint8Array(WORLD_SIZE * WORLD_SIZE);
+  const isOpen = (x, y) => {
+    if (x < 0 || y < 0 || x >= WORLD_SIZE || y >= WORLD_SIZE) return false;
+    const t = tiles[y * WORLD_SIZE + x];
+    return t !== TILE.WATER && t !== TILE.STONE;
+  };
+  const mark = (x, y) => {
+    const xi = Math.round(x), yi = Math.round(y);
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx * dx + dy * dy > 1) continue; // plus-shape, not a full 3x3 block
+        const nx = xi + dx, ny = yi + dy;
+        if (isOpen(nx, ny)) paths[ny * WORLD_SIZE + nx] = 1;
+      }
+    }
+  };
+
+  const originX = WORLD_SIZE / 2, originY = WORLD_SIZE / 2;
+  // Radiate a handful of trails out toward the coast in different
+  // directions, each wandering rather than running perfectly straight.
+  const trailCount = 5;
+  for (let i = 0; i < trailCount; i++) {
+    const angle = (i / trailCount) * Math.PI * 2 + rng() * 0.6;
+    const targetDist = WORLD_SIZE * (0.32 + rng() * 0.14);
+    let tx = originX + Math.cos(angle) * targetDist;
+    let ty = originY + Math.sin(angle) * targetDist;
+    // Walk the target inward off any water/mountain it landed on.
+    let guard = 0;
+    while (!isOpen(Math.round(tx), Math.round(ty)) && guard < 60) {
+      tx += (originX - tx) * 0.08;
+      ty += (originY - ty) * 0.08;
+      guard++;
+    }
+
+    const steps = Math.max(20, Math.round(Math.hypot(tx - originX, ty - originY) * 1.6));
+    const perpX = -(ty - originY), perpY = (tx - originX);
+    const perpLen = Math.max(1e-6, Math.hypot(perpX, perpY));
+    const wiggleFreq = 2 + rng() * 2;
+    const wiggleAmp = WORLD_SIZE * (0.03 + rng() * 0.03);
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const baseX = originX + (tx - originX) * t;
+      const baseY = originY + (ty - originY) * t;
+      const wiggle = Math.sin(t * Math.PI * wiggleFreq) * wiggleAmp * Math.sin(t * Math.PI); // tapers to 0 at both ends
+      const px = baseX + (perpX / perpLen) * wiggle;
+      const py = baseY + (perpY / perpLen) * wiggle;
+      mark(px, py);
+    }
+  }
+
+  return paths;
 }
 
 function tileAt(world, x, y) {

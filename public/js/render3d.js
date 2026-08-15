@@ -217,12 +217,24 @@ const BIOME_NAMES = { 0: 'grass', 1: 'forest', 2: 'water', 3: 'stone', 4: 'sand'
 const LAND_BIOMES = ['grass', 'forest', 'sand', 'stone'];
 const terrainMeshes = [];
 
+const PATH_COLOR = new THREE.Color('#8a6b3f');
+
 export function setWorld(world) {
   worldSize = world.size;
   const tileAt = (x, y) => {
     x = Math.max(0, Math.min(world.size - 1, x));
     y = Math.max(0, Math.min(world.size - 1, y));
     return world.tiles[y * world.size + x];
+  };
+  // Paths are a visual-only overlay (server: server/world.js carvePaths) —
+  // not a biome, just a tint toward dirt-brown on top of whatever biome
+  // texture is already there, so no changes are needed to the terrain
+  // texture-blend shader itself.
+  const pathAt = (x, y) => {
+    if (!world.paths) return false;
+    x = Math.max(0, Math.min(world.size - 1, x));
+    y = Math.max(0, Math.min(world.size - 1, y));
+    return !!world.paths[y * world.size + x];
   };
 
   const verts = worldSize + 1;
@@ -250,7 +262,9 @@ export function setWorld(world) {
       const bump = (hash2(vx, vy) - 0.5) * 0.06;
       // Crisp color: nearest tile (biome boundaries stay readable).
       const nearest = tileAt(Math.min(vx, worldSize - 1), Math.min(vy, worldSize - 1));
-      const c = TILE_COLOR3[nearest];
+      let c = TILE_COLOR3[nearest];
+      const isPath = pathAt(vx - 1, vy - 1) || pathAt(vx, vy - 1) || pathAt(vx - 1, vy) || pathAt(vx, vy);
+      if (isPath) c = c.clone().lerp(PATH_COLOR, 0.7);
       const shade = 0.92 + hash2(vx + 91.7, vy + 13.3) * 0.16;
       const i3 = (vy * verts + vx) * 3;
       const i2 = (vy * verts + vx) * 2;

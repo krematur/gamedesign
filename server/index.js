@@ -26,7 +26,7 @@ io.on('connection', (socket) => {
     const player = game.addPlayer(socket.id, data && data.name);
     socket.emit('welcome', {
       id: socket.id,
-      world: { size: game.world.size, tiles: Array.from(game.world.tiles) },
+      world: { size: game.world.size, tiles: Array.from(game.world.tiles), paths: Array.from(game.world.paths) },
       you: player,
     });
     socket.broadcast.emit('chat', { system: true, text: `${player.name} joined the world.` });
