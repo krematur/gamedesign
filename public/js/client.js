@@ -59,6 +59,7 @@ import * as Render3D from './render3d.js';
       updateClock(snap);
       Render3D.setDayPhase(snap.dayPhase, snap.isNight);
       Render3D.syncState(snap, myId);
+      Render3D.syncFields(snap.fields);
     });
     socket.on('you', (payload) => {
       me = payload;

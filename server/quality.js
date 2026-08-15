@@ -21,20 +21,26 @@ function baseIdOf(itemId) {
   return { base: itemId, quality: 'normal' };
 }
 
-// toolMatch: 'iron' (tier-2 tool used correctly), 'basic' (tier-1 tool or
-// hand-gathering), 'none' (wrong/no tool at all — rarely used since most
-// nodes just require the right tool category to interact).
-const GATHER_WEIGHTS = {
-  iron: { crude: 0.10, normal: 0.55, fine: 0.35 },
-  basic: { crude: 0.20, normal: 0.60, fine: 0.20 },
-  none: { crude: 0.45, normal: 0.50, fine: 0.05 },
-};
+// toolMatch: 'iron' (tier-2+ tool used correctly), 'basic' (tier-1 tool or
+// hand-gathering), 'none' (wrong/no tool at all).
+const TOOL_BONUS = { iron: 0.12, basic: 0.05, none: 0 };
 
-function rollGatherQuality(rng, toolMatch) {
-  const weights = GATHER_WEIGHTS[toolMatch] || GATHER_WEIGHTS.none;
+function clamp01(v) {
+  return Math.max(0, Math.min(1, v));
+}
+
+// The dominant factor is fieldBias (0..1): whether this gather happened
+// inside an active, rich resource field (see resourceFields.js) — that's
+// what should send a player scouting the map, the way a slightly-better
+// tool never could on its own. Tool tier only nudges the odds a little.
+function rollGatherQuality(rng, toolMatch, fieldBias = 0) {
+  const toolBonus = TOOL_BONUS[toolMatch] ?? 0;
+  const fineChance = clamp01(0.03 + fieldBias * 0.55 + toolBonus);
+  const crudeChance = clamp01(0.6 - fieldBias * 0.45 - toolBonus * 0.6);
+  const normalChance = Math.max(0, 1 - fineChance - crudeChance);
   const r = rng();
-  if (r < weights.crude) return 'crude';
-  if (r < weights.crude + weights.normal) return 'normal';
+  if (r < crudeChance) return 'crude';
+  if (r < crudeChance + normalChance) return 'normal';
   return 'fine';
 }
 

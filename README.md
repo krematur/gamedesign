@@ -29,6 +29,20 @@ players connect through a Three.js/WebGL client with a third-person camera.
   lets you pick which one to use, producing a matching-quality result: a
   Fine Axe hits harder than any axe a "normal" recipe alone could ever
   produce. Applies to tools/weapons, all smelted ingots, and cooked food
+- Resource fields (`server/resourceFields.js`), Star Wars Galaxies-style:
+  each of the 8 harvestable raw materials has exactly one active "deposit"
+  on the map at a time — a roving hotspot with its own randomly-rolled
+  richness that dominates the Crude/Normal/Fine odds far more than gear
+  does. Harvesting the same resource node outside any active deposit is
+  mostly Crude/Normal regardless of tool; the good stuff is wherever the
+  current hotspot happens to be. Deposits drain as they're mined and expire
+  after 8–15 minutes either way, then respawn at a new random spot in a
+  biome that suits the material — so the best place to mine iron this hour
+  won't be the best place tomorrow, and making Fine-tier gear means
+  scouting for wherever the richness currently is. Each deposit shows up
+  in-world as a colored glowing ring on the ground (visible once you're
+  close enough to render distance) — there's no map or list revealing them
+  remotely, so finding one is real exploration
 - Tiered gear progression, five material rungs deep:
   - Tools/weapons: stone (axe, pickaxe, spear) → iron → **steel** (smelted
     from iron ingot + coal at a furnace, gated behind the Master Smith
@@ -103,8 +117,11 @@ Environment variables:
 ## Architecture
 
 - `server/world.js` — deterministic procedural world generation (tile grid)
-- `server/quality.js` — Crude/Normal/Fine tier definitions, gather-quality
-  rolls, and item id helpers (`wood` ↔ `wood_fine`)
+- `server/quality.js` — Crude/Normal/Fine tier definitions, item id helpers
+  (`wood` ↔ `wood_fine`), and the gather-quality roll (dominated by resource
+  field bias, nudged a little by tool tier)
+- `server/resourceFields.js` — the roving per-material resource deposits:
+  placement, richness/capacity/lifetime rolls, bias lookup, depletion
 - `server/items.js` — item and crafting recipe definitions; tierable base
   items auto-generate their Crude/Fine variants with scaled stats; recipes
   have an `id` distinct from their `result` so multiple recipes can share
@@ -113,13 +130,15 @@ Environment variables:
   biomes, drop tables) that `game.js` drives generically
 - `server/quests.js` — NPC and quest chain definitions
 - `server/game.js` — authoritative game simulation: movement, gathering
-  (with quality rolls), crafting (with quality selection), combat (with
-  per-weapon attack speed), armor damage reduction, data-driven mob AI
-  (aggressive/flee/neutral), day/night cycle, quest tracking, tick loop
+  (with field-aware quality rolls), crafting (with quality selection),
+  combat (with per-weapon attack speed), armor damage reduction,
+  data-driven mob AI (aggressive/flee/neutral), day/night cycle, resource
+  field lifecycle, quest tracking, tick loop
 - `server/index.js` — Express static file server + Socket.IO event wiring
 - `public/js/render3d.js` — Three.js scene: terrain mesh generation, entity
-  mesh builders, day/night lighting, camera follow, mouse-to-ground raycasting,
-  and world-to-screen projection (for the HTML/2D HUD overlay)
+  mesh builders, resource field aura rendering, day/night lighting, camera
+  follow, mouse-to-ground raycasting, and world-to-screen projection (for
+  the HTML/2D HUD overlay)
 - `public/js/client.js` — networking, input, and all DOM-based UI (HUD,
   inventory, armor slots, crafting with quality selector, NPC dialogue,
   quest tracker, chat); delegates all 3D rendering to `render3d.js`
@@ -172,3 +191,9 @@ projected from world space via the Three.js camera.
   rendering for very large worlds, and a first-person camera option
 - More accessory effects and additional accessory slots
 - Per-player skins (the player asset override currently applies to everyone)
+- A survey/scanner tool for a more deliberate hunt for resource fields than
+  "look for the glowing ring," plus multiple simultaneous deposits per
+  material on larger maps
+- Resource field quality attributes beyond a single richness score (SWG-style
+  multi-stat resources — conductivity, malleability, etc. — feeding into
+  which stat a crafted item favors)

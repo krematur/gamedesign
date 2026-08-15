@@ -3,6 +3,7 @@ const { ITEMS, RECIPES } = require('./items');
 const { NPCS, QUESTS } = require('./quests');
 const { QUALITY_TIERS, qualifiedId, rollGatherQuality } = require('./quality');
 const { MOB_TYPES, rollDrops } = require('./mobs');
+const { ResourceFieldManager } = require('./resourceFields');
 
 const TICK_MS = 150;
 const DAY_LENGTH_TICKS = Math.round((6 * 60 * 1000) / TICK_MS); // ~6 min full day/night cycle
@@ -34,6 +35,7 @@ class Game {
     this.mobs = new Map(); // id -> mob
     this.structures = new Map(); // id -> placed structure
     this.tick = 0;
+    this.fields = new ResourceFieldManager(this.world, this.rng, TICK_MS);
     this.spawnResources();
     this.spawnInitialMobs();
     this.npcs = NPCS.map(n => this.placeNpc(n));
@@ -274,8 +276,10 @@ class Game {
       const amount = r.yield.min + Math.floor(this.rng() * (r.yield.max - r.yield.min + 1)) + yieldBonus;
       const baseItem = r.yield.item;
       const tierable = ITEMS[baseItem] && ITEMS[baseItem].tierable;
-      const quality = tierable ? rollGatherQuality(this.rng, toolMatch) : 'normal';
+      const fieldBias = tierable ? this.fields.biasAt(baseItem, r.x, r.y) : 0;
+      const quality = tierable ? rollGatherQuality(this.rng, toolMatch, fieldBias) : 'normal';
       const finalId = tierable ? qualifiedId(baseItem, quality) : baseItem;
+      if (tierable && fieldBias > 0) this.fields.deplete(baseItem, r.x, r.y, amount);
       p.inventory[finalId] = (p.inventory[finalId] || 0) + amount;
       events.push({ type: 'gathered', item: finalId, amount, resourceId, quality });
     }
@@ -575,6 +579,8 @@ class Game {
     this.tick++;
     const dt = dtMs / 1000;
 
+    this.fields.update(this.tick);
+
     // Players: movement + hunger/regen
     for (const p of this.players.values()) {
       if (!p.alive) continue;
@@ -752,6 +758,7 @@ class Game {
         id: s.id, type: s.type, x: s.x, y: s.y, hp: s.hp, maxHp: s.maxHp,
       })),
       npcs: this.npcs.map(n => ({ id: n.id, name: n.name, icon: n.icon, x: n.x, y: n.y })),
+      fields: this.fields.snapshot(),
     };
   }
 

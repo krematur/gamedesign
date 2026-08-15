@@ -15,6 +15,12 @@ const TILE_COLOR3 = {
   4: new THREE.Color('#d8c98a'),
 };
 
+// Resource field (hotspot) aura colors, one per harvestable material.
+const FIELD_COLORS = {
+  wood: '#7a5230', fiber: '#c9b84a', stone: '#a8a8a0', iron_ore: '#c96b3a',
+  coal: '#7a5ccf', gold_ore: '#f5c542', clay: '#c2703f', raw_fish: '#3fb8d9',
+};
+
 let renderer, scene, camera;
 let groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let raycaster = new THREE.Raycaster();
@@ -24,6 +30,7 @@ let waterMesh = null;
 
 const entityMeshes = new Map(); // entityId -> Object3D
 const nameSprites = new Map(); // entityId -> Sprite (for players/npcs)
+const fieldAuras = new Map(); // material -> ring mesh (resource hotspot indicator)
 
 // ---------- Real-art asset loading (sprites & glTF models) ----------
 // See assets.js for the manifest that opts entities into these instead of
@@ -299,6 +306,50 @@ function buildClayPit() {
   m.position.y = -0.05;
   return m;
 }
+
+// A resource field (hotspot) aura: a soft glowing ring on the ground
+// showing where the current best deposit of a material is. Players have to
+// physically explore into render/fog range to spot one — there's no
+// map-wide list — so finding the richest current spot for what they need
+// is real scouting, the way it is in the game this is modeled on.
+function buildFieldAura(material) {
+  const color = FIELD_COLORS[material] || '#ffffff';
+  const group = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(7.6, 9, 40),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.25, side: THREE.DoubleSide, depthWrite: false })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.06;
+  const fill = new THREE.Mesh(
+    new THREE.CircleGeometry(9, 40),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.05, side: THREE.DoubleSide, depthWrite: false })
+  );
+  fill.rotation.x = -Math.PI / 2;
+  fill.position.y = 0.055;
+  group.add(ring, fill);
+  group.userData.ring = ring;
+  group.userData.fill = fill;
+  group.userData.baseColor = color;
+  return group;
+}
+
+// Resource fields never come and go in the snapshot (there's always exactly
+// one per material) so this just updates position/intensity in place.
+export function syncFields(fields) {
+  for (const f of fields || []) {
+    let aura = fieldAuras.get(f.material);
+    if (!aura) {
+      aura = buildFieldAura(f.material);
+      scene.add(aura);
+      fieldAuras.set(f.material, aura);
+    }
+    aura.position.set(f.x, 0, f.y);
+    // Richer deposits glow more strongly — a visual cue for "is this worth mining".
+    aura.userData.ring.material.opacity = 0.15 + f.richness * 0.35;
+    aura.userData.fill.material.opacity = 0.03 + f.richness * 0.1;
+  }
+}
 function buildPerson(bodyColor, headColor) {
   const g = new THREE.Group();
   const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.5, 4, 8), new THREE.MeshStandardMaterial({ color: bodyColor }));
@@ -509,6 +560,10 @@ export function render() {
       const dz = camera.position.z - obj.position.z;
       obj.rotation.y = Math.atan2(dx, dz);
     }
+  }
+  const pulse = 0.85 + Math.sin(performance.now() / 900) * 0.15;
+  for (const aura of fieldAuras.values()) {
+    aura.userData.ring.scale.setScalar(pulse);
   }
   renderer.render(scene, camera);
 }
