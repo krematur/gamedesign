@@ -64,10 +64,15 @@ function generateWorld(seed = 1337) {
   const rawDetail = new Float32Array(WORLD_SIZE * WORLD_SIZE);
   const rawCoast = new Float32Array(WORLD_SIZE * WORLD_SIZE);
   const rawMountains = new Float32Array(WORLD_SIZE * WORLD_SIZE);
-  for (let i = 0; i < rawDetail.length; i++) { rawDetail[i] = rng(); rawCoast[i] = rng(); rawMountains[i] = rng(); }
+  const rawCliff = new Float32Array(WORLD_SIZE * WORLD_SIZE);
+  for (let i = 0; i < rawDetail.length; i++) { rawDetail[i] = rng(); rawCoast[i] = rng(); rawMountains[i] = rng(); rawCliff[i] = rng(); }
   const detail = normalize01(blurField(rawDetail, 2));
   const coastWarp = normalize01(blurField(rawCoast, 9));
   const mountains = normalize01(blurField(rawMountains, 7));
+  // Medium-scale patches along the shoreline: where this is high, the
+  // coast is rocky cliff instead of sandy beach — so the coastline reads
+  // as an alternating mix, not uniformly one or the other.
+  const cliffs = normalize01(blurField(rawCliff, 4));
 
   // A single landmass surrounded by ocean: start from a radial falloff
   // (high at the center, tapering to 0 at the map edge) and warp its
@@ -104,7 +109,10 @@ function generateWorld(seed = 1337) {
       } else if (n < 0.30) {
         tile = TILE.WATER;
       } else if (n < 0.36) {
-        tile = TILE.SAND;
+        // Rocky cliff patches break up the coastline instead of it always
+        // being a sandy beach — a coast that alternates cliff and beach
+        // reads much closer to a real island than a uniform sand ring.
+        tile = cliffs[idx] > 0.6 ? TILE.STONE : TILE.SAND;
       } else if (n < 0.68) {
         tile = TILE.GRASS;
       } else {

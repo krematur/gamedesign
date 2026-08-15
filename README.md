@@ -26,8 +26,10 @@ players connect through a Three.js/WebGL client with a third-person camera.
 - Procedurally generated island world (`server/world.js`): a single
   landmass surrounded by ocean, shaped from a radial falloff warped by
   large-scale noise (irregular bays/peninsulas instead of a perfect
-  circle), with a sand coastline ring, grass/forest interior, and
-  mountain ranges placed by an independent noise field so they cluster
+  circle), with a coastline that alternates sandy beach and raised rocky
+  cliff (its own noise field, so it's a mix rather than uniformly one or
+  the other), grass/forest interior, and mountain ranges placed by an
+  independent noise field so they cluster
   off to one side of the island rather than always crowning the exact
   center — that keeps the middle of the map, where players and NPCs
   spawn, on walkable lowland. A handful of winding dirt paths (also
