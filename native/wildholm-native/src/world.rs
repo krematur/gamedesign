@@ -26,6 +26,10 @@ impl Tile {
         }
     }
 
+    // Not used now that terrain.rs blends real textures instead of flat
+    // tinted vertex colors — kept for a minimap or a fallback low-detail
+    // render mode later.
+    #[allow(dead_code)]
     pub fn color(self) -> [f32; 3] {
         match self {
             Tile::Grass => [0.298, 0.478, 0.227],  // #4c7a3a
@@ -40,6 +44,13 @@ impl Tile {
 pub struct World {
     pub size: usize,
     pub tiles: Vec<Tile>,
+    // Not consumed yet — terrain.rs dropped path-tinting when it switched
+    // the vertex-color attribute over to biome blend weights (no spare
+    // channel left for a tint). Re-adding it means either a 5th blend
+    // weight (needs a second vertex-color-sized attribute) or a small
+    // separate greyscale "path mask" texture sampled alongside the biome
+    // textures. Kept computed since it's cheap and the data is correct.
+    #[allow(dead_code)]
     pub paths: Vec<bool>,
 }
 
@@ -50,6 +61,7 @@ impl World {
         self.tiles[y * self.size + x]
     }
 
+    #[allow(dead_code)]
     pub fn path_at(&self, x: i32, y: i32) -> bool {
         if x < 0 || y < 0 || x >= self.size as i32 || y >= self.size as i32 {
             return false;

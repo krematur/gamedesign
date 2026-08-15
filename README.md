@@ -16,9 +16,11 @@ generation) across.
 
 **There's also a verified native prototype** in `native/wildholm-native/`
 (Bevy/Rust) — unlike the Unreal scaffold, this one actually compiles and
-runs in this environment: real PBR terrain generated from a Rust port of
-`server/world.js`'s island algorithm, the village from `render3d.js`
-ported over, and a controllable third-person character, all screenshot-
+runs in this environment: real island terrain generated from a Rust port
+of `server/world.js`'s algorithm, with four real PBR biome textures
+blended per-vertex (a Bevy `MaterialExtension`/WGSL port of
+`render3d.js`'s terrain shader), the village from `render3d.js` ported
+over, and a controllable third-person character — all screenshot-
 verified. It's a world-rendering + movement prototype, not a full
 game-logic port (no networking/inventory/quests/mobs yet). See
 `native/wildholm-native/README.md`.

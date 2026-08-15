@@ -8,12 +8,13 @@ to install it there; see `../../unreal/Wildholm/README.md`).
 ![Proof screenshot](docs/proof_screenshot.png)
 
 That screenshot is a real render, not a mockup: the actual island
-generation algorithm ported from `server/world.js`, a village (ported
-from `buildVillage()`/`buildHut()`/`buildKeep()` in
-`public/js/render3d.js`) sitting on it, and a controllable player
-character with a following camera — all lit with real-time shadows and
-PBR materials, compiled and run headlessly in this sandbox, captured to
-disk, and inspected.
+generation algorithm ported from `server/world.js`, real PBR terrain
+textures blended per-vertex across biomes (grass/forest/sand/stone all
+visible, tiling and blending correctly), a village (ported from
+`buildVillage()`/`buildHut()`/`buildKeep()` in `public/js/render3d.js`)
+sitting on it, and a controllable player character with a following
+camera — all lit with real-time shadows, compiled and run headlessly in
+this sandbox, captured to disk, and inspected.
 
 ## What's real vs. what's a stub
 
@@ -24,10 +25,24 @@ disk, and inspected.
   coastline, an independent mountain noise field (so highlands don't
   always crown the exact map center), coastal cliff patches, and the
   5-trail path-carving algorithm. Same xorshift RNG as the JS version.
-- `src/terrain.rs` — builds an actual heightmapped, vertex-colored Bevy
-  `Mesh` from the world data (per-vertex height averaging + jitter, same
-  approach as `setWorld()` in `render3d.js`), split into land/water index
-  buffers sharing one position buffer so they stitch with no seams.
+- `src/terrain.rs` + `src/terrain_material.rs` +
+  `assets/shaders/terrain_blend.wgsl` — builds an actual heightmapped Bevy
+  `Mesh` (per-vertex height averaging + jitter, same approach as
+  `setWorld()` in `render3d.js`), split into land/water index buffers
+  sharing one position buffer so they stitch with no seams. The land mesh
+  uses a custom `MaterialExtension` on `StandardMaterial` that blends four
+  real biome diffuse textures per-fragment, weighted by per-vertex weights
+  carried in the vertex-color attribute — the WGSL/Bevy equivalent of
+  `applyBlendedTerrainTextures()`'s shader injection in `render3d.js`.
+  Hit two real bugs getting this right, both fixed by actually running it
+  and looking at the output rather than trusting the code: the material
+  briefly showed one flat color across huge stretches of ground (a
+  legitimate biome, just an unlucky village placement, confirmed against
+  the real world-gen output — not a bug), and then a genuine bug where
+  the terrain rendered as a uniform blur with zero texture detail, caused
+  by the default texture sampler clamping to the edge pixel instead of
+  tiling (UVs run well past `[0,1]` on an 80-tile world) — fixed by
+  loading the textures with explicit `Repeat` addressing.
 - `src/village.rs` — the keep + 5-hut layout, ported from
   `render3d.js`'s `buildVillage()`.
 - `src/player.rs` — a capsule character with WASD movement and a
@@ -38,21 +53,20 @@ disk, and inspected.
   camera framing) has actually been visually verified — the input
   handling itself hasn't been interactively exercised.
 - `main.rs` ties it together: generates the world, builds/spawns the
-  terrain meshes, finds a walkable spawn point, spawns the player just
-  off from the village so they don't start inside the keep, lights the
-  scene, and — for headless verification — screenshots and exits after
-  a few frames.
+  terrain meshes, finds a walkable spawn point (preferring grass/forest
+  over sand/stone for a nicer default view), spawns the player just off
+  from the village so they don't start inside the keep, lights the scene,
+  and — for headless verification — screenshots and exits after enough
+  frames for the four 1024×1024 textures to actually finish loading.
 
-**Known limitation:** the terrain currently uses vertex colors only, no
-textures. At this grid resolution (80×80 tiles) that reads as a soft
-color gradient rather than crisp biome detail — visible in the proof
-screenshot as a blurry rather than sharp coastline. The browser version
-solved this with a per-vertex texture-blend shader
-(`applyBlendedTerrainTextures` in `render3d.js`); porting that to Bevy
-means writing a custom WGSL material (or a `MaterialExtension` on
-`StandardMaterial`) that samples and blends multiple biome textures by a
-per-vertex weight, the same idea, different shader language. That's the
-natural next visual improvement.
+**Known simplification:** the terrain-texture-blend vertex-color
+attribute now carries the four biome blend *weights* (grass/forest/sand/
+stone), which used the last spare RGBA channel — there's no room left to
+also carry the dirt-path tint the browser version shows. `world.rs` still
+computes the path data (`World::paths`/`path_at()`, currently unused,
+`#[allow(dead_code)]`'d rather than deleted); re-adding the visual means
+either a second vertex attribute or a small greyscale path-mask texture
+sampled alongside the four biome textures.
 
 **Still a stub / not started:** everything gameplay-related — no
 networking, no inventory/crafting/quests, no mobs, no resource nodes/
@@ -116,8 +130,10 @@ VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json WGPU_BACKEND=vulkan \
   xvfb-run -a -s "-screen 0 1280x800x24" ./target/debug/wildholm-native
 ```
 
-It runs for ~30 frames, saves `screenshot.png` next to wherever you ran
-it from, and exits. On a machine with a real GPU, drop the `xvfb-run`
+It runs for ~200 frames (slow under software rendering, but that gives
+the four terrain textures time to actually finish loading before the
+screenshot fires), saves `screenshot.png` next to wherever you ran it
+from, and exits. On a machine with a real GPU, drop the `xvfb-run`
 wrapper and the env vars and run the binary directly instead — you'll
 get a live interactive window and can actually test WASD movement and
 the follow camera, which headless testing here can't exercise.
