@@ -210,6 +210,11 @@ export function resize() {
 
 // ---------- Terrain ----------
 const BIOME_NAMES = { 0: 'grass', 1: 'forest', 2: 'water', 3: 'stone', 4: 'sand' };
+// Land biomes get merged into one mesh with a per-vertex weight blend, so
+// biome boundaries fade smoothly instead of showing a hard tile-grid edge.
+// Water keeps its own separate (untextured) mesh — it's hidden under the
+// translucent water plane anyway.
+const LAND_BIOMES = ['grass', 'forest', 'sand', 'stone'];
 const terrainMeshes = [];
 
 export function setWorld(world) {
@@ -224,6 +229,11 @@ export function setWorld(world) {
   const positions = new Float32Array(verts * verts * 3);
   const colors = new Float32Array(verts * verts * 3);
   const uvs = new Float32Array(verts * verts * 2);
+  // Per-vertex blend weight toward each land biome (grass/forest/sand/stone),
+  // derived from the up-to-4 tiles touching that vertex corner. Interpolated
+  // across triangles by the GPU, this is what turns hard per-tile biome
+  // squares into a smooth gradient a little over a tile wide.
+  const biomeWeights = new Float32Array(verts * verts * 4);
 
   // Cheap deterministic hash -> [0,1), used to jitter color/height per
   // vertex so the terrain doesn't read as flat, uniform biome blocks.
@@ -244,46 +254,52 @@ export function setWorld(world) {
       const shade = 0.92 + hash2(vx + 91.7, vy + 13.3) * 0.16;
       const i3 = (vy * verts + vx) * 3;
       const i2 = (vy * verts + vx) * 2;
+      const i4 = (vy * verts + vx) * 4;
       positions[i3] = vx; positions[i3 + 1] = h + bump; positions[i3 + 2] = vy;
       colors[i3] = c.r * shade; colors[i3 + 1] = c.g * shade; colors[i3 + 2] = c.b * shade;
       // Raw world-position UVs; each material scales these via its own
       // texture.repeat rather than baking density into the UV data, so
       // one shared buffer works for every biome's tiling density.
       uvs[i2] = vx; uvs[i2 + 1] = vy;
+      for (const t of tiles) {
+        const idx = LAND_BIOMES.indexOf(BIOME_NAMES[t]);
+        if (idx >= 0) biomeWeights[i4 + idx] += 0.25;
+      }
     }
   }
 
-  // Bucket each tile's two triangles by biome so every biome gets its own
-  // mesh/material (and can have its own tiled texture) without seams —
-  // every mesh shares the exact same position data, so they stitch
-  // together with no gaps or z-fighting at biome boundaries.
-  const indicesByBiome = { grass: [], forest: [], water: [], stone: [], sand: [] };
+  // Bucket each tile's two triangles into "land" (grass/forest/sand/stone,
+  // one shared blended mesh) or "water" (its own untextured mesh). Every
+  // mesh shares the exact same position data, so they stitch together with
+  // no gaps or z-fighting at biome boundaries.
+  const indicesByGroup = { land: [], water: [] };
   for (let ty = 0; ty < worldSize; ty++) {
     for (let tx = 0; tx < worldSize; tx++) {
       const biome = BIOME_NAMES[world.tiles[ty * worldSize + tx]];
+      const group = biome === 'water' ? 'water' : 'land';
       const a = ty * verts + tx, b = a + 1, c = a + verts, d = c + 1;
-      indicesByBiome[biome].push(a, c, b, b, c, d);
+      indicesByGroup[group].push(a, c, b, b, c, d);
     }
   }
 
   terrainMeshes.length = 0;
-  for (const [biome, indices] of Object.entries(indicesByBiome)) {
+  for (const [group, indices] of Object.entries(indicesByGroup)) {
     if (!indices.length) continue;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+    if (group === 'land') geo.setAttribute('biomeWeight', new THREE.BufferAttribute(biomeWeights, 4));
     geo.setIndex(indices);
     geo.computeVertexNormals();
 
-    const texConfig = TERRAIN_TEXTURES[biome];
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, flatShading: !texConfig });
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, flatShading: true });
     const mesh = new THREE.Mesh(geo, mat);
     mesh.receiveShadow = true;
     scene.add(mesh);
     terrainMeshes.push(mesh);
 
-    if (texConfig) applyTerrainTexture(mat, texConfig);
+    if (group === 'land') applyBlendedTerrainTextures(mesh);
   }
 
   // Translucent water plane sitting above the sunken water terrain.
@@ -296,34 +312,109 @@ export function setWorld(world) {
   scene.add(waterMesh);
 }
 
-// Loads a biome's diffuse/normal/roughness maps and swaps them onto its
-// terrain material once ready. Async and best-effort: the mesh already
-// exists with the flat vertex-color fallback material, so a slow or
-// missing texture just means that biome briefly (or permanently) stays
-// flat-colored rather than blocking anything.
-async function applyTerrainTexture(mat, config) {
-  const repeat = config.repeat ?? 0.35;
-  const configureTexture = (tex, isColor) => {
+// Loads every land biome's diffuse/normal/roughness maps (whichever are
+// configured in TERRAIN_TEXTURES) and, once ready, swaps the land mesh's
+// material for one that blends between them per-vertex using the
+// `biomeWeight` attribute — smooth transitions instead of hard tile edges.
+// Async and best-effort: the mesh already has the flat vertex-color
+// fallback material, so slow/missing textures just mean it stays flat.
+async function applyBlendedTerrainTextures(mesh) {
+  const configured = LAND_BIOMES.filter((b) => TERRAIN_TEXTURES[b]);
+  if (!configured.length) return;
+  const anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const configureTexture = (tex, repeat, isColor) => {
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(repeat, repeat);
     if (isColor) tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    tex.anisotropy = anisotropy;
+    return tex;
   };
+  let loaded;
   try {
-    const [diffuse, normal, roughness] = await Promise.all([
-      loadTexture(config.diffuse),
-      config.normal ? loadTexture(config.normal) : Promise.resolve(null),
-      config.roughness ? loadTexture(config.roughness) : Promise.resolve(null),
-    ]);
-    configureTexture(diffuse, true);
-    mat.map = diffuse;
-    if (normal) { configureTexture(normal, false); mat.normalMap = normal; }
-    if (roughness) { configureTexture(roughness, false); mat.roughnessMap = roughness; mat.roughness = 1; }
-    mat.flatShading = false;
-    mat.needsUpdate = true;
+    loaded = await Promise.all(configured.map(async (biome) => {
+      const config = TERRAIN_TEXTURES[biome];
+      const repeat = config.repeat ?? 0.35;
+      const [diffuse, normal, roughness] = await Promise.all([
+        loadTexture(config.diffuse),
+        config.normal ? loadTexture(config.normal) : Promise.resolve(null),
+        config.roughness ? loadTexture(config.roughness) : Promise.resolve(null),
+      ]);
+      configureTexture(diffuse, repeat, true);
+      if (normal) configureTexture(normal, repeat, false);
+      if (roughness) configureTexture(roughness, repeat, false);
+      return { biome, diffuse, normal, roughness };
+    }));
   } catch (err) {
-    // Texture failed to load — keep the flat-color fallback material.
+    return; // one or more textures failed — keep the flat fallback material.
   }
+
+  // Fall back to a 1x1 white/neutral texture for any land biome that has no
+  // pack entry yet, so the shader's fixed 4-texture blend always has
+  // something valid to sample (its weight there may still be > 0).
+  const whiteTex = solidColorTexture('#ffffff');
+  const flatNormalTex = solidColorTexture('#8080ff');
+  const midRoughTex = solidColorTexture('#808080');
+  const byBiome = new Map(loaded.map((l) => [l.biome, l]));
+  const sample = (biome, which, fallback) => byBiome.get(biome)?.[which] || fallback;
+
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 1 });
+  mat.defines = { USE_UV: '', USE_NORMALMAP_TANGENTSPACE: '' };
+  mat.onBeforeCompile = (shader) => {
+    for (const biome of LAND_BIOMES) {
+      const cap = biome[0].toUpperCase() + biome.slice(1);
+      shader.uniforms[`t${cap}Diffuse`] = { value: sample(biome, 'diffuse', whiteTex) };
+      shader.uniforms[`t${cap}Normal`] = { value: sample(biome, 'normal', flatNormalTex) };
+      shader.uniforms[`t${cap}Roughness`] = { value: sample(biome, 'roughness', midRoughTex) };
+      shader.uniforms[`u${cap}Repeat`] = { value: TERRAIN_TEXTURES[biome]?.repeat ?? 0.35 };
+    }
+    const biomeDecls = LAND_BIOMES.map((b) => {
+      const cap = b[0].toUpperCase() + b.slice(1);
+      return `uniform sampler2D t${cap}Diffuse;\nuniform sampler2D t${cap}Normal;\nuniform sampler2D t${cap}Roughness;\nuniform float u${cap}Repeat;`;
+    }).join('\n');
+    const weightNorm = 'vec4 bw = vBiomeWeight / max(vBiomeWeight.x + vBiomeWeight.y + vBiomeWeight.z + vBiomeWeight.w, 0.0001);';
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', '#include <common>\nattribute vec4 biomeWeight;\nvarying vec4 vBiomeWeight;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvBiomeWeight = biomeWeight;');
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>\nvarying vec4 vBiomeWeight;\n${biomeDecls}`)
+      .replace('#include <map_fragment>', `{\n\t${weightNorm}\n\tvec3 blendedDiffuse =
+    texture2D( tGrassDiffuse, vUv * uGrassRepeat ).rgb * bw.x +
+    texture2D( tForestDiffuse, vUv * uForestRepeat ).rgb * bw.y +
+    texture2D( tSandDiffuse, vUv * uSandRepeat ).rgb * bw.z +
+    texture2D( tStoneDiffuse, vUv * uStoneRepeat ).rgb * bw.w;
+	diffuseColor.rgb *= blendedDiffuse;\n}`)
+      .replace('#include <roughnessmap_fragment>', `${weightNorm}\nfloat roughnessFactor =
+    texture2D( tGrassRoughness, vUv * uGrassRepeat ).g * bw.x +
+    texture2D( tForestRoughness, vUv * uForestRepeat ).g * bw.y +
+    texture2D( tSandRoughness, vUv * uSandRepeat ).g * bw.z +
+    texture2D( tStoneRoughness, vUv * uStoneRepeat ).g * bw.w;`)
+      .replace('#include <normal_fragment_maps>', `{\n\t${weightNorm}\n\tvec3 mapN =
+    (texture2D( tGrassNormal, vUv * uGrassRepeat ).xyz * 2.0 - 1.0) * bw.x +
+    (texture2D( tForestNormal, vUv * uForestRepeat ).xyz * 2.0 - 1.0) * bw.y +
+    (texture2D( tSandNormal, vUv * uSandRepeat ).xyz * 2.0 - 1.0) * bw.z +
+    (texture2D( tStoneNormal, vUv * uStoneRepeat ).xyz * 2.0 - 1.0) * bw.w;
+	mapN = normalize( mapN );
+	normal = normalize( tbn * mapN );\n}`);
+  };
+  mesh.material.dispose();
+  mesh.material = mat;
+}
+
+// 1x1 solid-color texture, used as a harmless sampler fallback for any land
+// biome that doesn't have a real texture in TERRAIN_TEXTURES yet.
+const solidTextureCache = new Map();
+function solidColorTexture(hex) {
+  if (solidTextureCache.has(hex)) return solidTextureCache.get(hex);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 1;
+  canvas.getContext('2d').fillStyle = hex;
+  canvas.getContext('2d').fillRect(0, 0, 1, 1);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  solidTextureCache.set(hex, tex);
+  return tex;
 }
 
 // ---------- Sky ----------

@@ -179,12 +179,16 @@ The renderer is a real (if lightweight) pipeline, not just `renderer.render()`:
   the day/night cycle alongside the fog
 - **Terrain**: real tiled PBR textures (diffuse + normal + roughness) per
   land biome (`public/js/terrainTextures.js`), on top of the same
-  deterministic per-vertex height/brightness jitter as before. The ground
-  is split into one mesh per biome sharing identical vertex positions at
-  their shared edges, so textured and untextured biomes sit flush with no
-  seams — any biome without a texture configured just keeps the flat
-  vertex-colored look, so textures can be (and were) added one biome at a
-  time without ever breaking the others
+  deterministic per-vertex height/brightness jitter as before. Land biomes
+  (grass/forest/sand/stone) share a single mesh with a custom shader
+  (`MeshStandardMaterial.onBeforeCompile`) that blends between each biome's
+  diffuse/normal/roughness maps per-vertex, using a `biomeWeight` attribute
+  derived from the tiles around each vertex corner — this turns hard
+  per-tile biome edges into a smooth gradient instead of visible texture
+  "blocks". Water keeps its own separate untextured mesh. Any land biome
+  without a texture configured falls back to a neutral sampler so the blend
+  still works, so textures can be (and were) added one biome at a time
+  without ever breaking the others
 - **Particles**: campfires and torches have a small looping ember system
   (`THREE.Points`, additive blending) drifting up out of the flame
 - **Equipped gear on the character**: every player's held tool/weapon and
