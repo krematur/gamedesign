@@ -10,8 +10,15 @@ players connect through a Three.js/WebGL client with a third-person camera.
   sunken, stone raised) with low-poly 3D models for every tree, rock, bush,
   fish spot, mob, player, NPC, and structure; a third-person camera follows
   the player and orbits toward the aim direction
+- A real rendering pipeline, not just raw geometry: soft real-time shadows
+  from a directional sun that follows the player (tight, sharp shadow
+  frustum instead of one stretched over the whole map), a post-processing
+  chain (bloom on fire/emissive surfaces, FXAA, ACES filmic tone mapping),
+  a gradient sky dome, subtle per-vertex terrain color/height variation so
+  biomes don't read as flat color blocks, and looping ember particles on
+  campfires/torches
 - Day/night cycle drives real lighting — sun/hemisphere light intensity, sky
-  color, and fog all shift between day and a darker, foggier night
+  gradient, and fog all shift between day and a darker, foggier night
 - Procedurally generated island world (grass, forest, stone, sand, water biomes)
 - Real-time multiplayer via WebSockets — every player sees the same shared world
 - Gathering: chop trees for wood, mine rocks/iron/coal/gold veins, dig clay
@@ -136,16 +143,45 @@ Environment variables:
   field lifecycle, quest tracking, tick loop
 - `server/index.js` — Express static file server + Socket.IO event wiring
 - `public/js/render3d.js` — Three.js scene: terrain mesh generation, entity
-  mesh builders, resource field aura rendering, day/night lighting, camera
-  follow, mouse-to-ground raycasting, and world-to-screen projection (for
-  the HTML/2D HUD overlay)
+  mesh builders, resource field aura + ember particle rendering, the
+  shadow/post-processing/sky pipeline, day/night lighting, camera follow
+  (sun frustum included), mouse-to-ground raycasting, and world-to-screen
+  projection (for the HTML/2D HUD overlay)
 - `public/js/client.js` — networking, input, and all DOM-based UI (HUD,
   inventory, armor slots, crafting with quality selector, NPC dialogue,
   quest tracker, chat); delegates all 3D rendering to `render3d.js`
 - `public/js/assets.js` — the real-art manifest (see "Adding real character
   art" below); empty by default
-- `public/vendor/` — vendored Three.js build + `GLTFLoader` (served locally,
-  no CDN)
+- `public/vendor/` — vendored Three.js build, `GLTFLoader`, and the
+  post-processing pipeline (`EffectComposer`, bloom, FXAA, tone mapping),
+  all served locally with no CDN dependency
+
+### Rendering pipeline
+
+The renderer is a real (if lightweight) pipeline, not just `renderer.render()`:
+
+- **Shadows**: a directional "sun" light casts soft (PCF) shadows. Its
+  shadow-camera frustum is a small box that follows the player each frame
+  instead of trying to cover the whole 80x80 map — that keeps the shadow
+  map's resolution sharp near the player, who's the only one looking at it
+- **Post-processing** (`EffectComposer`): render → `UnrealBloomPass` (glow
+  on fire and other emissive surfaces) → `FXAAPass` (antialiasing, since a
+  composer bypasses the browser's native MSAA) → `OutputPass` (ACES filmic
+  tone mapping + correct color space on the final image)
+- **Sky**: a gradient sky dome (custom vertex/fragment shader, horizon →
+  zenith) instead of a flat background color, with its colors driven by
+  the day/night cycle alongside the fog
+- **Terrain variation**: a cheap deterministic hash jitters each terrain
+  vertex's height and brightness slightly, so biomes read as natural ground
+  rather than flat, uniform color blocks
+- **Particles**: campfires and torches have a small looping ember system
+  (`THREE.Points`, additive blending) drifting up out of the flame
+
+This gets Wildholm to a polished stylized/low-poly look. It does not and
+cannot make it photorealistic — that gap is almost entirely about art
+assets (high-poly models, hand-authored textures, animation), not rendering
+code; see "Adding real character art" below for the asset pipeline that
+exists for when real art is available.
 
 ### Adding real character art
 
@@ -197,3 +233,7 @@ projected from world space via the Three.js camera.
 - Resource field quality attributes beyond a single richness score (SWG-style
   multi-stat resources — conductivity, malleability, etc. — feeding into
   which stat a crafted item favors)
+- Deeper rendering: ambient occlusion (SSAO), water surface normal
+  animation/reflections, GPU instancing for large forests, visible
+  equipped weapons/armor on character models, higher-poly hand-authored
+  meshes for the hero entities (player, key NPCs)

@@ -4,6 +4,11 @@
 // points (for HUD overlays) and ground-raycast points (for click targeting).
 import * as THREE from '../vendor/three.module.js';
 import { GLTFLoader } from '../vendor/loaders/GLTFLoader.js';
+import { EffectComposer } from '../vendor/postprocessing/EffectComposer.js';
+import { RenderPass } from '../vendor/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '../vendor/postprocessing/UnrealBloomPass.js';
+import { FXAAPass } from '../vendor/postprocessing/FXAAPass.js';
+import { OutputPass } from '../vendor/postprocessing/OutputPass.js';
 import { ASSET_MANIFEST } from './assets.js';
 
 const TILE_HEIGHT = { 0: 0, 1: 0.08, 2: -0.6, 3: 0.55, 4: -0.05 }; // grass, forest, water, stone, sand
@@ -21,7 +26,7 @@ const FIELD_COLORS = {
   coal: '#7a5ccf', gold_ore: '#f5c542', clay: '#c2703f', raw_fish: '#3fb8d9',
 };
 
-let renderer, scene, camera;
+let renderer, scene, camera, composer, bloomPass, fxaaPass;
 let groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 let raycaster = new THREE.Raycaster();
 let worldSize = 80;
@@ -122,27 +127,66 @@ const CAMERA_LERP = 0.12;
 const camCurrent = new THREE.Vector3();
 let camInitialized = false;
 
+// The sun's shadow frustum is a fixed-size box that follows the player
+// (see updateCamera) rather than trying to cover the whole 80x80 world —
+// that keeps the shadow map resolution tight and sharp close to the
+// player, which is what's actually visible, instead of stretched thin
+// over terrain that's mostly off in the fog anyway.
+const SUN_OFFSET = new THREE.Vector3(24, 36, 16);
+const SHADOW_FRUSTUM = 26;
+
 export function init(canvasEl) {
-  renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: true });
+  renderer = new THREE.WebGLRenderer({ canvas: canvasEl, antialias: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-  renderer.shadowMap.enabled = false;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   scene = new THREE.Scene();
-  scene.background = new THREE.Color('#8fc9e8');
-  fog = new THREE.Fog(scene.background.getHex(), 35, 70);
+  fog = new THREE.Fog('#8fc9e8', 35, 70);
   scene.fog = fog;
+  buildSky();
 
-  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 200);
+  camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 400);
 
   hemi = new THREE.HemisphereLight('#bcd6ea', '#3a4a2a', 0.9);
   scene.add(hemi);
+
   sun = new THREE.DirectionalLight('#fff3d6', 1.1);
-  sun.position.set(20, 30, 10);
+  sun.position.copy(SUN_OFFSET);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 90;
+  sun.shadow.camera.left = -SHADOW_FRUSTUM;
+  sun.shadow.camera.right = SHADOW_FRUSTUM;
+  sun.shadow.camera.top = SHADOW_FRUSTUM;
+  sun.shadow.camera.bottom = -SHADOW_FRUSTUM;
+  sun.shadow.bias = -0.0015;
+  sun.shadow.normalBias = 0.02;
+  sun.target = new THREE.Object3D();
+  scene.add(sun.target);
   scene.add(sun);
+
   scene.add(new THREE.AmbientLight('#404050', 0.25));
 
+  setupComposer();
   resize();
   window.addEventListener('resize', resize);
+}
+
+// Post-processing chain: render -> bloom (fire/emissive glow) -> FXAA
+// (post-process antialiasing, since MSAA doesn't apply through a composer)
+// -> output (ACES tone mapping + correct color space on the final blit).
+function setupComposer() {
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  bloomPass = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.5, 0.55, 0.86);
+  composer.addPass(bloomPass);
+  fxaaPass = new FXAAPass();
+  composer.addPass(fxaaPass);
+  composer.addPass(new OutputPass());
 }
 
 export function resize() {
@@ -150,6 +194,7 @@ export function resize() {
   renderer.setSize(window.innerWidth, window.innerHeight, false);
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
 }
 
 // ---------- Terrain ----------
@@ -165,17 +210,26 @@ export function setWorld(world) {
   const positions = new Float32Array(verts * verts * 3);
   const colors = new Float32Array(verts * verts * 3);
 
+  // Cheap deterministic hash -> [0,1), used to jitter color/height per
+  // vertex so the terrain doesn't read as flat, uniform biome blocks.
+  const hash2 = (x, y) => {
+    const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+    return s - Math.floor(s);
+  };
+
   for (let vy = 0; vy < verts; vy++) {
     for (let vx = 0; vx < verts; vx++) {
       // Smooth height: average the up-to-4 tiles sharing this vertex corner.
       const tiles = [tileAt(vx - 1, vy - 1), tileAt(vx, vy - 1), tileAt(vx - 1, vy), tileAt(vx, vy)];
       const h = tiles.reduce((s, t) => s + TILE_HEIGHT[t], 0) / tiles.length;
+      const bump = (hash2(vx, vy) - 0.5) * 0.06;
       // Crisp color: nearest tile (biome boundaries stay readable).
       const nearest = tileAt(Math.min(vx, worldSize - 1), Math.min(vy, worldSize - 1));
       const c = TILE_COLOR3[nearest];
+      const shade = 0.92 + hash2(vx + 91.7, vy + 13.3) * 0.16;
       const i = (vy * verts + vx) * 3;
-      positions[i] = vx; positions[i + 1] = h; positions[i + 2] = vy;
-      colors[i] = c.r; colors[i + 1] = c.g; colors[i + 2] = c.b;
+      positions[i] = vx; positions[i + 1] = h + bump; positions[i + 2] = vy;
+      colors[i] = c.r * shade; colors[i + 1] = c.g * shade; colors[i + 2] = c.b * shade;
     }
   }
 
@@ -193,17 +247,58 @@ export function setWorld(world) {
   geo.setIndex(indices);
   geo.computeVertexNormals();
 
-  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.95 });
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 0.88 });
   const mesh = new THREE.Mesh(geo, mat);
+  mesh.receiveShadow = true;
   scene.add(mesh);
 
   // Translucent water plane sitting above the sunken water terrain.
   const waterGeo = new THREE.PlaneGeometry(worldSize, worldSize);
   waterGeo.rotateX(-Math.PI / 2);
   waterGeo.translate(worldSize / 2, -0.25, worldSize / 2);
-  const waterMat = new THREE.MeshStandardMaterial({ color: '#2f7fb8', transparent: true, opacity: 0.65, roughness: 0.2 });
+  const waterMat = new THREE.MeshStandardMaterial({ color: '#2f7fb8', transparent: true, opacity: 0.7, roughness: 0.12, metalness: 0.15 });
   waterMesh = new THREE.Mesh(waterGeo, waterMat);
+  waterMesh.receiveShadow = true;
   scene.add(waterMesh);
+}
+
+// ---------- Sky ----------
+let skyMaterial = null;
+const SKY_DAY = { top: new THREE.Color('#3a7bd5'), bottom: new THREE.Color('#bcd6ea') };
+const SKY_NIGHT = { top: new THREE.Color('#020617'), bottom: new THREE.Color('#0b1330') };
+
+function buildSky() {
+  skyMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      topColor: { value: SKY_DAY.top.clone() },
+      bottomColor: { value: SKY_DAY.bottom.clone() },
+      offset: { value: 20 },
+      exponent: { value: 0.7 },
+    },
+    vertexShader: `
+      varying vec3 vWorldPosition;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 topColor;
+      uniform vec3 bottomColor;
+      uniform float offset;
+      uniform float exponent;
+      varying vec3 vWorldPosition;
+      void main() {
+        float h = normalize(vWorldPosition + vec3(0.0, offset, 0.0)).y;
+        gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0);
+      }
+    `,
+    side: THREE.BackSide,
+    fog: false,
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(350, 24, 16), skyMaterial);
+  scene.add(sky);
 }
 
 // ---------- Lighting / atmosphere ----------
@@ -213,11 +308,13 @@ export function setDayPhase(dayPhase, isNight) {
   const t = 1 - darkness;
   sun.intensity = 0.25 + 0.85 * t;
   hemi.intensity = 0.35 + 0.55 * t;
-  const skyDay = new THREE.Color('#8fc9e8');
-  const skyNight = new THREE.Color('#0b1330');
-  const sky = skyDay.clone().lerp(skyNight, darkness);
-  scene.background = sky;
-  fog.color = sky;
+
+  const top = SKY_DAY.top.clone().lerp(SKY_NIGHT.top, darkness);
+  const bottom = SKY_DAY.bottom.clone().lerp(SKY_NIGHT.bottom, darkness);
+  skyMaterial.uniforms.topColor.value.copy(top);
+  skyMaterial.uniforms.bottomColor.value.copy(bottom);
+
+  fog.color = bottom;
   fog.near = 20 + 20 * t;
   fog.far = 45 + 30 * t;
 }
@@ -259,14 +356,14 @@ function buildTree() {
   return g;
 }
 function buildRock(color = '#8a8a84') {
-  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(0.4, 0), new THREE.MeshStandardMaterial({ color, flatShading: true }));
+  const m = new THREE.Mesh(new THREE.DodecahedronGeometry(0.4, 0), new THREE.MeshStandardMaterial({ color, flatShading: true, roughness: 0.85, metalness: 0.05 }));
   m.position.y = 0.28;
   m.rotation.set(Math.random(), Math.random(), Math.random());
   return m;
 }
 function buildIronVein() {
   const g = buildRock('#8a8a84');
-  const speck = new THREE.Mesh(new THREE.DodecahedronGeometry(0.14, 0), new THREE.MeshStandardMaterial({ color: '#c96b3a', emissive: '#5a2a10', flatShading: true }));
+  const speck = new THREE.Mesh(new THREE.DodecahedronGeometry(0.14, 0), new THREE.MeshStandardMaterial({ color: '#c96b3a', emissive: '#5a2a10', flatShading: true, roughness: 0.4, metalness: 0.7 }));
   speck.position.set(0.2, 0.5, 0.1);
   g.add(speck);
   return g;
@@ -295,7 +392,7 @@ function buildFishingSpot() {
 function buildOreVein(speckColor, speckEmissive) {
   const g = buildRock('#8a8a84');
   for (let i = 0; i < 3; i++) {
-    const speck = new THREE.Mesh(new THREE.DodecahedronGeometry(0.1, 0), new THREE.MeshStandardMaterial({ color: speckColor, emissive: speckEmissive, emissiveIntensity: 0.5, flatShading: true }));
+    const speck = new THREE.Mesh(new THREE.DodecahedronGeometry(0.1, 0), new THREE.MeshStandardMaterial({ color: speckColor, emissive: speckEmissive, emissiveIntensity: 0.5, flatShading: true, roughness: 0.35, metalness: 0.75 }));
     speck.position.set((Math.random() - 0.5) * 0.4, 0.35 + Math.random() * 0.2, (Math.random() - 0.5) * 0.4);
     g.add(speck);
   }
@@ -413,6 +510,32 @@ function buildNpc() {
   g.add(hat);
   return g;
 }
+// A small upward-drifting, looping ember particle system, parented under a
+// fire's flame position. Each particle resets to the base once it reaches
+// the top of its life rather than being destroyed/recreated, so this is
+// just a few floats mutated per frame — cheap even with many fires lit.
+function buildEmbers(count, spread) {
+  const geo = new THREE.BufferGeometry();
+  const positions = new Float32Array(count * 3);
+  const ages = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    ages[i] = Math.random();
+    positions[i * 3] = (Math.random() - 0.5) * spread;
+    positions[i * 3 + 1] = ages[i] * 0.7;
+    positions[i * 3 + 2] = (Math.random() - 0.5) * spread;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  const mat = new THREE.PointsMaterial({
+    color: '#ffb066', size: 0.06, transparent: true, opacity: 0.8,
+    depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
+  });
+  const points = new THREE.Points(geo, mat);
+  points.userData.ages = ages;
+  points.userData.spread = spread;
+  points.frustumCulled = false;
+  return points;
+}
+
 function buildStructure(type) {
   if (type === 'campfire') {
     const g = new THREE.Group();
@@ -422,7 +545,10 @@ function buildStructure(type) {
     flame.position.y = 0.35;
     const light = new THREE.PointLight('#ff9c42', 1.2, 5);
     light.position.y = 0.5;
-    g.add(logs, flame, light);
+    const embers = buildEmbers(16, 0.22);
+    embers.position.y = 0.3;
+    g.add(logs, flame, light, embers);
+    g.userData.embers = embers;
     return g;
   }
   if (type === 'torch') {
@@ -433,7 +559,10 @@ function buildStructure(type) {
     flame.position.y = 0.9;
     const light = new THREE.PointLight('#ffab5c', 0.9, 4);
     light.position.y = 0.9;
-    g.add(pole, flame, light);
+    const embers = buildEmbers(10, 0.1);
+    embers.position.y = 0.85;
+    g.add(pole, flame, light, embers);
+    g.userData.embers = embers;
     return g;
   }
   if (type === 'furnace') {
@@ -460,10 +589,17 @@ const RESOURCE_BUILDERS = {
 };
 
 // ---------- Per-frame sync ----------
+function enableShadows(obj) {
+  obj.traverse((child) => {
+    if (child.isMesh) { child.castShadow = true; child.receiveShadow = true; }
+  });
+}
+
 function upsert(id, buildFn, x, y, scaleFn) {
   let obj = entityMeshes.get(id);
   if (!obj) {
     obj = buildFn();
+    enableShadows(obj);
     scene.add(obj);
     entityMeshes.set(id, obj);
   }
@@ -551,21 +687,52 @@ export function updateCamera(playerPos, aimDir) {
   camCurrent.lerp(targetPos, CAMERA_LERP);
   camera.position.copy(camCurrent);
   camera.lookAt(playerPos.x, 0.8, playerPos.y);
+
+  // Keep the sun (and its shadow frustum) centered on the player rather
+  // than fixed in world space, so shadow resolution stays sharp wherever
+  // the player roams on the 80x80 map.
+  sun.position.set(playerPos.x + SUN_OFFSET.x, SUN_OFFSET.y, playerPos.y + SUN_OFFSET.z);
+  sun.target.position.set(playerPos.x, 0, playerPos.y);
+  sun.target.updateMatrixWorld();
+}
+
+let lastFrameTime = performance.now();
+
+function updateEmbers(embers, dt) {
+  const ages = embers.userData.ages;
+  const spread = embers.userData.spread;
+  const pos = embers.geometry.attributes.position;
+  for (let i = 0; i < ages.length; i++) {
+    ages[i] += dt * 0.5;
+    if (ages[i] > 1) {
+      ages[i] -= 1;
+      pos.array[i * 3] = (Math.random() - 0.5) * spread;
+      pos.array[i * 3 + 2] = (Math.random() - 0.5) * spread;
+    }
+    pos.array[i * 3 + 1] = ages[i] * 0.7;
+  }
+  pos.needsUpdate = true;
+  embers.material.opacity = 0.8;
 }
 
 export function render() {
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+
   for (const obj of entityMeshes.values()) {
     if (obj.userData.isBillboard) {
       const dx = camera.position.x - obj.position.x;
       const dz = camera.position.z - obj.position.z;
       obj.rotation.y = Math.atan2(dx, dz);
     }
+    if (obj.userData.embers) updateEmbers(obj.userData.embers, dt);
   }
-  const pulse = 0.85 + Math.sin(performance.now() / 900) * 0.15;
+  const pulse = 0.85 + Math.sin(now / 900) * 0.15;
   for (const aura of fieldAuras.values()) {
     aura.userData.ring.scale.setScalar(pulse);
   }
-  renderer.render(scene, camera);
+  composer.render();
 }
 
 // ---------- Input helpers ----------
