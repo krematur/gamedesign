@@ -12,8 +12,18 @@ hand-authored C++ scaffold, not yet opened/compiled — this environment
 has no Unreal Engine install, no GUI, and no network access to fetch one)
 and `unreal/Wildholm/DESIGN_PORT.md` for the plan to bring the existing
 game design (items, quests, mobs, resource fields, quality tiers, world
-generation) across. The sections below describe the browser version,
-which still exists and works.
+generation) across.
+
+**There's also a verified native rendering prototype** in
+`native/wildholm-native/` (Bevy/Rust) — unlike the Unreal scaffold, this
+one actually compiles and runs in this environment (real PBR materials,
+real shadows, screenshot-tested), proving out the "move to a native PBR
+pipeline" direction concretely while Unreal itself stays untestable here.
+It's a rendering proof of concept, not a game-logic port. See
+`native/wildholm-native/README.md`.
+
+The sections below describe the browser version, which still exists and
+works.
 
 ## Features
 
