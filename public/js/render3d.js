@@ -3,6 +3,8 @@
 // game rules — client.js feeds it snapshots and reads back projected screen
 // points (for HUD overlays) and ground-raycast points (for click targeting).
 import * as THREE from '../vendor/three.module.js';
+import { GLTFLoader } from '../vendor/loaders/GLTFLoader.js';
+import { ASSET_MANIFEST } from './assets.js';
 
 const TILE_HEIGHT = { 0: 0, 1: 0.08, 2: -0.6, 3: 0.55, 4: -0.05 }; // grass, forest, water, stone, sand
 const TILE_COLOR3 = {
@@ -22,6 +24,89 @@ let waterMesh = null;
 
 const entityMeshes = new Map(); // entityId -> Object3D
 const nameSprites = new Map(); // entityId -> Sprite (for players/npcs)
+
+// ---------- Real-art asset loading (sprites & glTF models) ----------
+// See assets.js for the manifest that opts entities into these instead of
+// the built-in procedural geometry. Loading is async; builders return a
+// placeholder immediately and swap in the real art once it arrives (or
+// silently keep the placeholder if the asset fails to load).
+const textureLoader = new THREE.TextureLoader();
+const gltfLoader = new GLTFLoader();
+const textureCache = new Map();
+const modelCache = new Map();
+
+function loadTexture(url) {
+  if (!textureCache.has(url)) {
+    textureCache.set(url, new Promise((resolve, reject) => {
+      textureLoader.load(url, resolve, undefined, reject);
+    }));
+  }
+  return textureCache.get(url);
+}
+
+function loadModel(url) {
+  if (!modelCache.has(url)) {
+    modelCache.set(url, new Promise((resolve, reject) => {
+      gltfLoader.load(url, (gltf) => resolve(gltf.scene), undefined, reject);
+    }));
+  }
+  return modelCache.get(url);
+}
+
+// A billboard is a flat textured plane that rotates to face the camera
+// around the vertical axis only (so the character still reads as "standing"
+// from any viewing angle, rather than facing the camera dead-on like a UI
+// sprite). Used for 2D/illustrated character art.
+function buildBillboard(asset) {
+  const width = asset.width || 1.4;
+  const height = asset.height || 2.2;
+  const mat = new THREE.MeshStandardMaterial({
+    transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, roughness: 1,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), mat);
+  mesh.position.y = height / 2;
+  mesh.userData.isBillboard = true;
+  loadTexture(asset.url).then((tex) => {
+    tex.colorSpace = THREE.SRGBColorSpace;
+    mat.map = tex;
+    mat.needsUpdate = true;
+  }).catch(() => { /* keep the blank placeholder if the art is missing */ });
+  return mesh;
+}
+
+// A model placeholder shows a faint wireframe capsule until the real glTF
+// model finishes loading (or forever, if it fails — better than nothing).
+function buildModelPlaceholder(asset) {
+  const group = new THREE.Group();
+  const placeholder = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.28, 0.5, 4, 8),
+    new THREE.MeshBasicMaterial({ color: '#8899aa', wireframe: true })
+  );
+  placeholder.position.y = 0.55;
+  group.add(placeholder);
+  loadModel(asset.url).then((modelScene) => {
+    group.remove(placeholder);
+    const model = modelScene.clone(true);
+    if (asset.scale) model.scale.setScalar(asset.scale);
+    group.add(model);
+  }).catch(() => { /* keep the wireframe placeholder if the model is missing */ });
+  return group;
+}
+
+function assetBuilder(asset) {
+  if (asset.type === 'sprite') return () => buildBillboard(asset);
+  if (asset.type === 'model') return () => buildModelPlaceholder(asset);
+  return null;
+}
+
+// Returns a real-art builder if the manifest opts this entity in, else the
+// given procedural fallback builder — the normal path when no art exists.
+function resolveBuilder(kind, key, fallback) {
+  const table = ASSET_MANIFEST[kind];
+  const asset = table && (table[key] || table.default);
+  if (!asset) return fallback;
+  return assetBuilder(asset) || fallback;
+}
 
 let cameraYawOffset = 0; // radians, adjustable later for camera orbit
 const CAMERA_HEIGHT = 7.5;
@@ -355,10 +440,11 @@ export function syncState(state, myId) {
 
   for (const n of state.npcs || []) {
     seen.add('n:' + n.id);
-    upsert('n:' + n.id, buildNpc, n.x, n.y);
+    const npcAsset = ASSET_MANIFEST.npc && (ASSET_MANIFEST.npc[n.id] || ASSET_MANIFEST.npc.default);
+    upsert('n:' + n.id, resolveBuilder('npc', n.id, buildNpc), n.x, n.y);
     if (!nameSprites.has('n:' + n.id)) {
       const sprite = makeNameSprite(n.name, '#f5c542');
-      sprite.position.y = 1.9;
+      sprite.position.y = npcAsset && npcAsset.height ? npcAsset.height + 0.3 : 1.9;
       entityMeshes.get('n:' + n.id).add(sprite);
       nameSprites.set('n:' + n.id, sprite);
     }
@@ -366,7 +452,7 @@ export function syncState(state, myId) {
 
   for (const m of state.mobs) {
     seen.add('m:' + m.id);
-    const builder = MOB_BUILDERS[m.type] || MOB_BUILDERS.wolf;
+    const builder = resolveBuilder('mob', m.type, MOB_BUILDERS[m.type] || MOB_BUILDERS.wolf);
     const obj = upsert('m:' + m.id, builder, m.x, m.y);
     if (obj._lastX !== undefined) {
       const dx = m.x - obj._lastX, dy = m.y - obj._lastY;
@@ -378,14 +464,16 @@ export function syncState(state, myId) {
   for (const p of state.players) {
     seen.add('p:' + p.id);
     const isMe = p.id === myId;
-    const obj = upsert('p:' + p.id, () => buildPerson(isMe ? '#5ba848' : '#4586c9'), p.x, p.y);
+    const playerAsset = ASSET_MANIFEST.player && ASSET_MANIFEST.player.default;
+    const fallback = () => buildPerson(isMe ? '#5ba848' : '#4586c9');
+    const obj = upsert('p:' + p.id, resolveBuilder('player', 'default', fallback), p.x, p.y);
     obj.visible = p.alive;
-    if (p.dir && (p.dir.x || p.dir.y)) {
+    if (p.dir && (p.dir.x || p.dir.y) && !obj.userData.isBillboard) {
       obj.rotation.y = Math.atan2(p.dir.x, p.dir.y);
     }
     if (!nameSprites.has('p:' + p.id)) {
       const sprite = makeNameSprite(p.name, isMe ? '#9be564' : '#bcd6ff');
-      sprite.position.y = 1.55;
+      sprite.position.y = playerAsset && playerAsset.height ? playerAsset.height + 0.3 : 1.55;
       obj.add(sprite);
       nameSprites.set('p:' + p.id, sprite);
     }
@@ -415,6 +503,13 @@ export function updateCamera(playerPos, aimDir) {
 }
 
 export function render() {
+  for (const obj of entityMeshes.values()) {
+    if (obj.userData.isBillboard) {
+      const dx = camera.position.x - obj.position.x;
+      const dz = camera.position.z - obj.position.z;
+      obj.rotation.y = Math.atan2(dx, dz);
+    }
+  }
   renderer.render(scene, camera);
 }
 

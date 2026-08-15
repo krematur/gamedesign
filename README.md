@@ -61,6 +61,11 @@ players connect through a Three.js/WebGL client with a third-person camera.
   brick), furnaces (needed to smelt iron/gold/steel and craft that gear),
   walls/reinforced walls, and torches for light
 - In-world chat
+- Real-art pipeline: any player, NPC, or animal can be swapped from the
+  built-in low-poly geometry to real character art — either a 2D
+  illustration rendered as a camera-facing billboard, or a rigged/unrigged
+  glTF (`.glb`) 3D model — by dropping a file in `public/assets/` and adding
+  one line to `public/js/assets.js`. No art is wired in by default
 
 ## Running locally
 
@@ -118,7 +123,33 @@ Environment variables:
 - `public/js/client.js` — networking, input, and all DOM-based UI (HUD,
   inventory, armor slots, crafting with quality selector, NPC dialogue,
   quest tracker, chat); delegates all 3D rendering to `render3d.js`
-- `public/vendor/` — vendored Three.js build (served locally, no CDN)
+- `public/js/assets.js` — the real-art manifest (see "Adding real character
+  art" below); empty by default
+- `public/vendor/` — vendored Three.js build + `GLTFLoader` (served locally,
+  no CDN)
+
+### Adding real character art
+
+By default every entity is built from simple Three.js primitives. To swap
+one for real art, drop a file into `public/assets/sprites/` (a 2D image,
+rendered as a camera-facing billboard — the right choice for illustrated or
+photoreal character art that isn't a 3D model) or `public/assets/models/`
+(a `.glb` 3D model, loaded with `GLTFLoader`), then add one line to
+`public/js/assets.js`:
+
+```js
+export const ASSET_MANIFEST = {
+  npc: {
+    elder_rowan: { type: 'sprite', url: '/assets/sprites/elder_rowan.png', width: 1.6, height: 2.6 },
+  },
+};
+```
+
+Loading is async with an immediate placeholder (blank billboard, or a
+wireframe capsule for models) so nothing blocks on missing/slow assets — a
+failed load just keeps the placeholder forever rather than crashing.
+See the READMEs in `public/assets/sprites/` and `public/assets/models/` for
+the full option list (`player`/`npc`/`mob`, keyed by NPC id or animal type).
 
 The server runs a fixed-timestep tick loop (~6.6 Hz) that updates the whole
 simulation and broadcasts a state snapshot to every connected client, which
@@ -136,6 +167,8 @@ projected from world space via the Three.js camera.
 - Deeper fishing (bait, rare/legendary catches, different water biomes)
 - Player-owned bases with durability and raiding
 - Branching quest lines, multiple NPCs, and repeatable/daily quests
-- Animated/rigged character and animal models, instanced rendering for very
-  large worlds, and a first-person camera option
+- Animated/rigged character and animal models (loaded models currently
+  render in their bind pose — no walk/idle animation yet), instanced
+  rendering for very large worlds, and a first-person camera option
 - More accessory effects and additional accessory slots
+- Per-player skins (the player asset override currently applies to everyone)
