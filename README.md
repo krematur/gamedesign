@@ -19,6 +19,10 @@ players connect through a Three.js/WebGL client with a third-person camera.
   campfires/torches
 - Day/night cycle drives real lighting — sun/hemisphere light intensity, sky
   gradient, and fog all shift between day and a darker, foggier night
+- A small village (`buildVillage` in `public/js/render3d.js`) — a keep and
+  a cluster of huts placed around the quest-giver NPC, client-side and
+  purely decorative, so the world reads as an inhabited settlement rather
+  than NPCs standing alone in open field
 - Procedurally generated island world (`server/world.js`): a single
   landmass surrounded by ocean, shaped from a radial falloff warped by
   large-scale noise (irregular bays/peninsulas instead of a perfect

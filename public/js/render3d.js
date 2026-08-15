@@ -766,6 +766,62 @@ function buildNpc() {
   g.add(hat);
   return g;
 }
+
+// ---------- Village (static decorative structures) ----------
+// A small cluster of low-poly buildings around the quest-giver NPC, so the
+// world reads as an inhabited settlement instead of NPCs standing in open
+// field. Purely visual/client-side — no gameplay hookup, no server data.
+function buildHut({ w = 1.6, d = 1.4, h = 1.1, wallColor = '#8a7052', roofColor = '#6b3a2a', roofHeight = 0.9 }) {
+  const g = new THREE.Group();
+  const wallMat = new THREE.MeshStandardMaterial({ color: wallColor, roughness: 0.95 });
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
+  wall.position.y = h / 2;
+  const roofMat = new THREE.MeshStandardMaterial({ color: roofColor, roughness: 0.85, flatShading: true });
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(Math.max(w, d) * 0.78, roofHeight, 4), roofMat);
+  roof.rotation.y = Math.PI / 4;
+  roof.position.y = h + roofHeight / 2 - 0.05;
+  g.add(wall, roof);
+  return g;
+}
+
+function buildKeep() {
+  const g = new THREE.Group();
+  const stoneMat = new THREE.MeshStandardMaterial({ color: '#8a8a84', roughness: 0.9 });
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.25, 2.4, 10), stoneMat);
+  base.position.y = 1.2;
+  const roofMat = new THREE.MeshStandardMaterial({ color: '#4a3a5a', roughness: 0.7, flatShading: true });
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(1.35, 1.3, 10), roofMat);
+  roof.position.y = 2.4 + 0.65;
+  const flagpole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.7, 5), new THREE.MeshStandardMaterial({ color: '#3a2a1c' }));
+  flagpole.position.y = 2.4 + 1.3 + 0.35;
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.35, 0.22), new THREE.MeshStandardMaterial({ color: '#c94040', side: THREE.DoubleSide }));
+  flag.position.set(0.2, 2.4 + 1.3 + 0.55, 0);
+  g.add(base, roof, flagpole, flag);
+  return g;
+}
+
+// Fixed layout, offsets relative to the village anchor (the elder NPC's
+// position) — a keep behind the NPC, a loose ring of huts around it.
+const VILLAGE_LAYOUT = [
+  { build: buildKeep, dx: 0, dz: 3.2 },
+  { build: () => buildHut({ w: 1.7, d: 1.4, h: 1.15 }), dx: -3.4, dz: 0.6 },
+  { build: () => buildHut({ w: 1.4, d: 1.5, h: 1.0, wallColor: '#9a8362' }), dx: 3.2, dz: -0.8 },
+  { build: () => buildHut({ w: 1.5, d: 1.3, h: 1.05, wallColor: '#7a6248' }), dx: -2.2, dz: -3.0 },
+  { build: () => buildHut({ w: 1.8, d: 1.5, h: 1.2, wallColor: '#8a7052' }), dx: 2.6, dz: 3.4 },
+  { build: () => buildHut({ w: 1.3, d: 1.3, h: 0.95, wallColor: '#9a8362' }), dx: -4.4, dz: -1.6 },
+];
+let villageBuilt = false;
+function buildVillage(cx, cy) {
+  if (villageBuilt) return;
+  villageBuilt = true;
+  for (const spot of VILLAGE_LAYOUT) {
+    const obj = spot.build();
+    obj.position.set(cx + spot.dx, 0, cy + spot.dz);
+    obj.rotation.y = (Math.random() - 0.5) * 0.4;
+    enableShadows(obj);
+    scene.add(obj);
+  }
+}
 // A small upward-drifting, looping ember particle system, parented under a
 // fire's flame position. Each particle resets to the base once it reaches
 // the top of its life rather than being destroyed/recreated, so this is
@@ -922,6 +978,7 @@ export function syncState(state, myId) {
 
   for (const n of state.npcs || []) {
     seen.add('n:' + n.id);
+    if (n.id === 'elder_rowan') buildVillage(n.x, n.y);
     const npcAsset = ASSET_MANIFEST.npc && (ASSET_MANIFEST.npc[n.id] || ASSET_MANIFEST.npc.default);
     upsert('n:' + n.id, resolveBuilder('npc', n.id, buildNpc), n.x, n.y);
     if (!nameSprites.has('n:' + n.id)) {
